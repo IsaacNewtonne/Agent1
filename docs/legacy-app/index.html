@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Agent1 Mission Control</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <img src="../Agent1_Project_Docs/Logo.png" alt="" class="brand-mark" />
+          <div>
+            <p class="eyebrow">Local-first agent runtime</p>
+            <h1>Agent1 Mission Control</h1>
+          </div>
+        </div>
+        <div class="topbar-actions">
+          <button id="apiButton" type="button">Refresh API</button>
+          <label class="file-button">
+            <input id="traceFile" type="file" accept="application/json,.json" />
+            Load trace
+          </label>
+          <button id="demoButton" type="button">Demo trace</button>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <aside class="agent-rail" aria-label="Agent graph">
+          <div class="panel-heading">
+            <span>Agent Graph</span>
+            <strong id="sessionStatus">idle</strong>
+          </div>
+          <div id="agentGraph" class="agent-graph"></div>
+          <div class="run-card">
+            <p class="label">Session</p>
+            <strong id="sessionId">No trace loaded</strong>
+            <span id="sessionTitle">Export a session with the CLI, then load it here.</span>
+          </div>
+
+          <form id="settingsForm" class="run-card stack-form">
+            <p class="label">Settings</p>
+            <label>
+              <span>API Base</span>
+              <input id="apiBaseInput" type="text" value="http://127.0.0.1:17371" />
+            </label>
+            <label>
+              <span>Refresh ms</span>
+              <input id="refreshMsInput" type="number" min="500" step="100" value="2000" />
+            </label>
+            <label class="inline-check">
+              <input id="autoRefreshInput" type="checkbox" checked />
+              <span>Auto refresh live view</span>
+            </label>
+            <button type="submit">Save Settings</button>
+          </form>
+
+          <form id="agentBuilderForm" class="run-card stack-form">
+            <p class="label">Agent Builder</p>
+            <label>
+              <span>Agent ID</span>
+              <input id="agentIdInput" type="text" placeholder="assistant_local" required />
+            </label>
+            <label>
+              <span>Name</span>
+              <input id="agentNameInput" type="text" placeholder="Assistant Local" required />
+            </label>
+            <label>
+              <span>Model Provider</span>
+              <input id="agentProviderInput" type="text" value="ollama" required />
+            </label>
+            <label>
+              <span>Model</span>
+              <input id="agentModelInput" type="text" value="qwen2.5:7b" required />
+            </label>
+            <label>
+              <span>System Prompt</span>
+              <textarea id="agentPromptInput" rows="4" required>You are a practical local agent.</textarea>
+            </label>
+            <button type="submit">Save Agent</button>
+            <span id="agentBuilderStatus" class="form-status"></span>
+          </form>
+        </aside>
+
+        <section class="session-pane" aria-label="Session workspace">
+          <div class="command-strip">
+            <div>
+              <p class="eyebrow">Run workspace</p>
+              <h2 id="rootAgent">Awaiting trace</h2>
+            </div>
+            <div class="metrics">
+              <div><strong id="messageCount">0</strong><span>messages</span></div>
+              <div><strong id="toolCount">0</strong><span>tools</span></div>
+              <div><strong id="eventCount">0</strong><span>events</span></div>
+            </div>
+          </div>
+
+          <div class="approval-focus">
+            <div>
+              <p class="label">Permission posture</p>
+              <strong id="riskSummary">No approvals requested</strong>
+            </div>
+            <div id="approvalList" class="approval-list"></div>
+          </div>
+
+          <div class="tabs" role="tablist" aria-label="Trace views">
+            <button class="tab is-active" type="button" data-view="messages">Messages</button>
+            <button class="tab" type="button" data-view="tools">Tools</button>
+            <button class="tab" type="button" data-view="memory">Memory</button>
+            <button class="tab" type="button" data-view="agents">Agents</button>
+            <button class="tab" type="button" data-view="events">Events</button>
+          </div>
+
+          <div id="messagesView" class="trace-view"></div>
+          <div id="toolsView" class="trace-view is-hidden"></div>
+          <div id="memoryView" class="trace-view is-hidden"></div>
+          <div id="agentsView" class="trace-view is-hidden"></div>
+          <div id="eventsView" class="trace-view is-hidden"></div>
+        </section>
+
+        <aside class="event-rail" aria-label="Live event feed">
+          <div class="panel-heading">
+            <span>Event Feed</span>
+            <strong id="lastEvent">silent</strong>
+          </div>
+          <div id="eventFeed" class="event-feed"></div>
+        </aside>
+      </main>
+    </div>
+
+    <dialog id="approvalModal" class="approval-modal">
+      <article>
+        <header>
+          <h3>Approval Required</h3>
+          <button id="approvalModalClose" type="button" aria-label="Close">Close</button>
+        </header>
+        <p id="approvalSummary"></p>
+        <pre id="approvalPayload"></pre>
+        <div class="approval-actions">
+          <button id="approvalApprove" type="button">Approve</button>
+          <button id="approvalDeny" type="button">Deny</button>
+        </div>
+      </article>
+    </dialog>
+
+    <script src="app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,17 @@
+target/
+.agent1/
+*.db
+*.db-shm
+*.db-wal
+node_modules/
+dist/
+tmp-test-dir/
+target-*/
+*.exe
+*.msi
+*.log
+.env
+.DS_Store
+Thumbs.db
+desktop/src-tauri/target/
+desktop/src-tauri/icons/

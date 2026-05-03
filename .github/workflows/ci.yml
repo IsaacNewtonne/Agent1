@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test (Rust)
+    runs-on: windows-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "agent1"
+          workspaces: crates
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Lint with clippy
+        run: cargo clippy -- -D warnings
+
+      - name: Build
+        run: cargo build --all
+
+      - name: Test
+        run: cargo test --all
+
+  desktop:
+    name: Build Desktop (Node/Tauri)
+    runs-on: windows-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install desktop deps
+        working-directory: desktop
+        run: npm install
+
+      - name: Build desktop
+        working-directory: desktop
+        run: npm run build
+
+  lint:
+    name: Lint (Security)
+    runs-on: windows-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Audit dependencies
+        run: cargo audit || true
+
+      - name: Check for vulnerabilities
+        run: cargo tree --duplicates || true

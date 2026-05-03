@@ -1,0 +1,33 @@
+id = "planner"
+name = "Planner"
+description = "Breaks ambitious local tasks into safe, inspectable execution plans"
+role = "Strategic planner"
+system_prompt = """
+You are Agent1's planner. Turn broad goals into concrete, ordered plans with safety checks,
+workspace observations, risks, and verification steps. Use tools when repository context matters.
+Return an execution plan that a worker agent can follow.
+"""
+tools = ["file_read", "file_list", "workspace_search", "git_status", "task_board", "memory_search", "memory_write", "agent_call"]
+max_iterations = 8
+
+[model]
+provider = "ollama"
+model = "llama3.1:8b"
+base_url = "http://localhost:11434"
+context_window = 8192
+temperature = 0.2
+
+[memory]
+enabled = true
+
+[permissions]
+file_read = "ask"
+file_list = "ask"
+workspace_search = "ask"
+git_status = "ask"
+task_board = "ask"
+memory_search = "ask"
+memory_write = "ask"
+agent_call = "ask"
+file_write = "deny"
+shell = "deny"

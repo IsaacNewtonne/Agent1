@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Agent1</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #080a0d;
+        --surface: #111a22;
+        --border: #2d4556;
+        --text: #eff4f7;
+        --muted: #99a8b5;
+        --primary: #62d6a5;
+        --accent: #6cb9ff;
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        display: grid;
+        min-height: 100vh;
+        margin: 0;
+        place-items: center;
+        color: var(--text);
+        background: var(--bg);
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
+      }
+
+      main {
+        width: min(560px, calc(100vw - 32px));
+        padding: 32px;
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        background: var(--surface);
+        box-shadow: 0 24px 60px rgba(0,0,0,0.4);
+      }
+
+      h1 {
+        margin: 0 0 6px;
+        font-size: 1.5rem;
+        letter-spacing: -0.01em;
+      }
+
+      .subtitle {
+        margin: 0 0 28px;
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
+
+      h2 {
+        margin: 24px 0 10px;
+        font-size: 0.78rem;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: var(--muted);
+      }
+
+      ol, ul {
+        margin: 0 0 20px;
+        padding-left: 20px;
+        color: var(--muted);
+        line-height: 1.7;
+        font-size: 0.88rem;
+      }
+
+      code {
+        font-family: "IBM Plex Mono", Consolas, monospace;
+        background: rgba(255,255,255,0.07);
+        border-radius: 4px;
+        padding: 1px 5px;
+        font-size: 0.85em;
+        color: var(--accent);
+      }
+
+      .check {
+        color: var(--primary);
+        margin-right: 6px;
+      }
+
+      a {
+        color: var(--accent);
+        text-decoration: none;
+      }
+
+      a:hover { text-decoration: underline; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Agent1 Desktop</h1>
+      <p class="subtitle">Local-first personal agent runtime</p>
+
+      <h2>Quick Start</h2>
+      <ol>
+        <li>Start the API server: <code>cargo run -p agent1-cli -- server</code></li>
+        <li>In a new terminal: <code>cd desktop && npm run tauri:dev</code></li>
+        <li>The desktop app opens automatically and connects to the API.</li>
+      </ol>
+
+      <h2>First Run Checklist</h2>
+      <ul>
+        <li><span class="check">&#10003;</span> <a href="https://ollama.com">Install Ollama</a> and pull a model (e.g., <code>ollama pull llama3.1:8b</code>)</li>
+        <li><span class="check">&#10003;</span> Verify Ollama: <code>curl http://localhost:11434/api/tags</code></li>
+        <li><span class="check">&#10003;</span> Create an agent: use the Agent Builder in the desktop UI</li>
+        <li><span class="check">&#10003;</span> Run a task and approve/deny tool calls as needed</li>
+      </ul>
+
+      <h2>Direct API Access</h2>
+      <ul>
+        <li>API server: <code>http://127.0.0.1:17371</code></li>
+        <li>Health: <code>GET /api/health</code></li>
+        <li>Agents: <code>GET /api/agents</code></li>
+        <li>Sessions: <code>GET /api/sessions</code></li>
+      </ul>
+
+      <h2>CLI Reference</h2>
+      <ul>
+        <li><code>cargo run -p agent1-cli -- run --agent agents/assistant.toml --task "your task"</code></li>
+        <li><code>cargo run -p agent1-cli -- sessions</code></li>
+        <li><code>cargo run -p agent1-cli -- memory search "query"</code></li>
+        <li><code>cargo run -p agent1-cli -- ui</code> &mdash; print these instructions</li>
+      </ul>
+
+      <p style="color: var(--muted); font-size: 0.8rem; margin-top: 24px;">
+        The legacy static UI has been archived. Use the desktop app or API for all interactions.
+      </p>
+    </main>
+  </body>
+</html>

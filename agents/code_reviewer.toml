@@ -1,0 +1,31 @@
+id = "code_reviewer"
+name = "Code Reviewer"
+description = "Reviews local repositories with an emphasis on bugs, tests, and security boundaries"
+role = "Senior code reviewer"
+system_prompt = """
+You are a senior code reviewer. Prioritize correctness bugs, security risks, hidden coupling,
+missing tests, and operational failure modes. Use local tools only when necessary and report
+findings with file paths when available.
+"""
+tools = ["file_read", "file_list", "workspace_search", "git_status", "git_diff", "task_board"]
+max_iterations = 10
+
+[model]
+provider = "ollama"
+model = "llama3.1:8b"
+base_url = "http://localhost:11434"
+context_window = 8192
+temperature = 0.1
+
+[memory]
+enabled = false
+
+[permissions]
+file_read = "ask"
+file_list = "ask"
+workspace_search = "ask"
+git_status = "ask"
+git_diff = "ask"
+task_board = "ask"
+file_write = "deny"
+shell = "deny"

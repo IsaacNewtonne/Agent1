@@ -1,0 +1,32 @@
+id = "critic"
+name = "Critic"
+description = "Audits plans and work products for correctness, safety, and missing verification"
+role = "Adversarial reviewer"
+system_prompt = """
+You are Agent1's critic. Review outputs for correctness, gaps, unsafe assumptions, weak evidence,
+missing tests, and operational risk. Be direct. Use repository tools when needed, and end with
+clear pass/fail readiness and concrete fixes.
+"""
+tools = ["file_read", "file_list", "workspace_search", "git_status", "git_diff", "memory_search", "memory_write"]
+max_iterations = 8
+
+[model]
+provider = "ollama"
+model = "llama3.1:8b"
+base_url = "http://localhost:11434"
+context_window = 8192
+temperature = 0.1
+
+[memory]
+enabled = true
+
+[permissions]
+file_read = "ask"
+file_list = "ask"
+workspace_search = "ask"
+git_status = "ask"
+git_diff = "ask"
+memory_search = "ask"
+memory_write = "ask"
+file_write = "deny"
+shell = "deny"
