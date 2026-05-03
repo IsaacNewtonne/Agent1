@@ -1,96 +1,76 @@
-# Agent1 - Local-First Personal Agent Runtime
+# 🤖 Agent1 - Your Local AI Assistant
 
-A local-first personal agent runtime with MCP server support, streaming model providers, and a desktop UI.
+A local-first personal AI agent that runs on your machine. No cloud, no account required.
 
-## Installation
+## ✨ What It Does
 
-### From Source
+- **Runs AI agents locally** - Your data stays on your device
+- **Connects to Ollama** - Uses local AI models (Llama, Mistral, etc.)
+- **MCP support** - Works with 80+ tools (filesystem, Git, Slack, etc.)
+- **Desktop app** - Clean UI for managing agents
+- **Persistent memory** - Remembers conversations
 
-```bash
-cargo build --release
-```
+## 🚀 Quick Start
 
-### From Binary
-
-Download the latest release from GitHub Releases.
-
-## Quick Start
-
-### 1. Start the API Server
+### Start the Server
 
 ```bash
 cargo run --bin agent1 -- server --bind 127.0.0.1:17371
 ```
 
-### 2. Launch Desktop UI
+### Open the Desktop App
 
 ```bash
 cd desktop
+npm install
 npm run tauri:dev
 ```
 
-Or run the built application after `npm run tauri:build`.
+## 💻 CLI Commands
 
-## CLI Commands
-
-| Command | Description |
-|---------|-------------|
-| `agent1 run --agent <file> --task <task>` | Run an agent |
+| Command | What It Does |
+|---------|--------------|
+| `agent1 run --agent my-agent.toml --task "hello"` | Run an agent |
 | `agent1 server` | Start the API server |
-| `agent1 models` | List available models |
-| `agent1 agent list` | List saved agents |
-| `agent1 memory write` | Write a memory |
-| `agent1 mcp list` | List MCP servers |
+| `agent1 models` | See available AI models |
+| `agent1 memory write "note"` | Save a note |
 
-## API Endpoints
+## 🌐 API Endpoints
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/agents` | GET | List agents |
-| `/api/agents` | POST | Create agent |
-| `/api/sessions` | GET | List sessions |
-| `/api/sessions/run` | POST | Run agent |
-| `/api/sessions/{id}/trace` | GET | Get session trace |
-| `/api/sessions/{id}/cancel` | POST | Cancel session |
-| `/api/events` | GET | Get events |
-| `/api/approvals` | GET | Get approvals |
-| `/api/models` | GET | List model providers |
-| `/api/mcp/servers` | GET | List MCP servers |
-| `/api/mcp/servers` | POST | Add MCP server |
-| `/api/memory` | GET/POST | Memory operations |
-| `/ws/events` | WS | WebSocket events |
-| `/api/health` | GET | Health check |
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/agents` | List your agents |
+| `POST /api/sessions/run` | Run a task |
+| `GET /api/sessions/{id}/stream` | Stream progress |
+| `GET /ws/events` | Real-time events |
 
-## Configuration
+## ⚙️ Configuration
 
-### Model Providers
+### Connect to Ollama
 
-- **ollama**: Local Ollama instance (default `http://localhost:11434`)
-- **openai-compatible**: OpenAI-compatible APIs (default `http://localhost:8000/v1`)
-- **mock**: Mock provider for testing
+```bash
+export OLLAMA_BASE_URL=http://localhost:11434
+```
 
-### Environment Variables
+### Use OpenAI-Compatible APIs
 
-- `OLLAMA_BASE_URL`: Override Ollama base URL
-- `OPENAI_BASE_URL`: Override OpenAI-compatible base URL
+```bash
+export OPENAI_BASE_URL=http://localhost:8000/v1
+```
 
-## Troubleshooting
+## 🔧 Troubleshooting
 
-### Ollama Connection Error
+### Can't connect to Ollama?
+Run `ollama serve` in another terminal.
 
-Ensure Ollama is running: `ollama serve`
+### Port in use?
+Try: `cargo run --bin agent1 -- server --bind 127.0.0.1:17372`
 
-### MCP Server Not Starting
+### MCP server not working?
+Check: `agent1 mcp list`
 
-Check that the command and arguments are valid. Use `agent1 mcp list` to verify.
+## 🔒 Privacy
 
-### Port Already in Use
-
-Use `--bind 127.0.0.1:17372` to use a different port.
-
-## Security
-
-- API server binds to loopback only by default
-- Secrets in logs are automatically redacted
-- File operations require explicit permissions
-- MCP servers can be disabled individually
+- Runs locally - data never leaves your machine
+- API binds to localhost only
+- Secrets are automatically redacted in logs
