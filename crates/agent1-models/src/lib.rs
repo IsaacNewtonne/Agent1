@@ -187,7 +187,9 @@ impl ModelProvider for OllamaProvider {
             .await
             .map_err(|err| map_request_error("ollama chat stream request", err))?
             .error_for_status()
-            .map_err(|err| Agent1Error::Runtime(format!("ollama chat stream returned an error: {err}")))?;
+            .map_err(|err| {
+                Agent1Error::Runtime(format!("ollama chat stream returned an error: {err}"))
+            })?;
         let mut stream = response.bytes_stream();
         let mut pending = String::new();
         let mut chunks = Vec::new();
@@ -209,25 +211,25 @@ impl ModelProvider for OllamaProvider {
                 if packet.done {
                     continue;
                 }
-                if let Some(message) = packet.message {
-                    if !message.content.is_empty() {
-                        chunks.push(message.content);
-                    }
+                if let Some(message) = packet.message
+                    && !message.content.is_empty()
+                {
+                    chunks.push(message.content);
                 }
             }
         }
         if !pending.trim().is_empty() {
-            let packet: OllamaStreamPacket = serde_json::from_str(pending.trim()).map_err(|err| {
-                Agent1Error::InvalidModelResponse(format!(
-                    "ollama trailing stream packet was not JSON: {err}"
-                ))
-            })?;
-            if !packet.done {
-                if let Some(message) = packet.message {
-                    if !message.content.is_empty() {
-                        chunks.push(message.content);
-                    }
-                }
+            let packet: OllamaStreamPacket =
+                serde_json::from_str(pending.trim()).map_err(|err| {
+                    Agent1Error::InvalidModelResponse(format!(
+                        "ollama trailing stream packet was not JSON: {err}"
+                    ))
+                })?;
+            if !packet.done
+                && let Some(message) = packet.message
+                && !message.content.is_empty()
+            {
+                chunks.push(message.content);
             }
         }
         if chunks.is_empty() {
@@ -384,14 +386,12 @@ impl ModelProvider for OpenAiCompatibleProvider {
                         Ok(c) => c,
                         Err(_) => continue,
                     };
-                    if let Some(choice) = chunk.choices.into_iter().next() {
-                        if choice.finish_reason.is_none() {
-                            if let Some(content) = choice.delta.content {
-                                if !content.is_empty() {
-                                    chunks.push(content);
-                                }
-                            }
-                        }
+                    if let Some(choice) = chunk.choices.into_iter().next()
+                        && choice.finish_reason.is_none()
+                        && let Some(content) = choice.delta.content
+                        && !content.is_empty()
+                    {
+                        chunks.push(content);
                     }
                 }
             }
@@ -539,7 +539,10 @@ mod tests {
     async fn ollama_list_models_works() {
         let (base_url, server) = spawn_http_server(|request| {
             assert!(request.starts_with("GET /api/tags HTTP/1.1"));
-            http_json_response(200, r#"{"models":[{"name":"qwen2.5:7b"},{"name":"phi4-mini"}]}"#)
+            http_json_response(
+                200,
+                r#"{"models":[{"name":"qwen2.5:7b"},{"name":"phi4-mini"}]}"#,
+            )
         })
         .await;
         let provider = OllamaProvider::new();
@@ -601,7 +604,10 @@ mod tests {
             })
             .await
             .expect("stream should succeed");
-        assert_eq!(response.chunks, vec!["hello ".to_string(), "stream".to_string()]);
+        assert_eq!(
+            response.chunks,
+            vec!["hello ".to_string(), "stream".to_string()]
+        );
         assert_eq!(response.content, "hello stream");
         server.await.expect("server task");
     }

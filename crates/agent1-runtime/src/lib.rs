@@ -7,8 +7,8 @@ use std::{
 
 use agent1_core::{
     Agent, Agent1Error, ApprovalRecord, ChatMessage, ChatRequest, EventType, McpServerConfig,
-    MemoryItem, Message, MessageRole, PermissionMode, Result, RuntimeEvent, Session,
-    SessionStatus, ToolCallRecord, ToolCallStatus, ToolDefinition, ToolResult, new_id, now,
+    MemoryItem, Message, MessageRole, PermissionMode, Result, RuntimeEvent, Session, SessionStatus,
+    ToolCallRecord, ToolCallStatus, ToolDefinition, ToolResult, new_id, now,
 };
 use agent1_db::SqliteStore;
 use agent1_models::provider_for;
@@ -91,9 +91,10 @@ impl<A: ApprovalDelegate + Clone> AgentRuntime<A> {
     }
 
     pub async fn run(&self, request: RunAgentRequest) -> Result<RunAgentResult> {
-        let _permit = self.session_semaphore.acquire().await.map_err(|_| {
-            Agent1Error::Runtime("concurrent session limit reached".to_string())
-        })?;
+        let _permit =
+            self.session_semaphore.acquire().await.map_err(|_| {
+                Agent1Error::Runtime("concurrent session limit reached".to_string())
+            })?;
         self.store.save_agent(&request.agent).await?;
         let session_id = new_id("sess");
         let created_at = now();
@@ -401,14 +402,14 @@ impl<A: ApprovalDelegate + Clone> AgentRuntime<A> {
         .await?;
         let result = if let Some(tool) = native_tool {
             tool.execute(
-                    input.clone(),
-                    ToolContext {
-                        workspace_root: workspace_root.clone(),
-                        agent_id: agent.id.clone(),
-                        session_id: session_id.to_string(),
-                    },
-                )
-                .await
+                input.clone(),
+                ToolContext {
+                    workspace_root: workspace_root.clone(),
+                    agent_id: agent.id.clone(),
+                    session_id: session_id.to_string(),
+                },
+            )
+            .await
         } else {
             self.execute_runtime_tool(agent, session_id, workspace_root, &tool_name, input.clone())
                 .await
@@ -489,11 +490,16 @@ impl<A: ApprovalDelegate + Clone> AgentRuntime<A> {
     ) -> Result<ToolResult> {
         match tool_name {
             "memory_search" => {
-                let input: MemorySearchInput = serde_json::from_value(input)
-                    .map_err(|err| Agent1Error::Config(format!("invalid memory_search input: {err}")))?;
+                let input: MemorySearchInput = serde_json::from_value(input).map_err(|err| {
+                    Agent1Error::Config(format!("invalid memory_search input: {err}"))
+                })?;
                 let memories = self
                     .store
-                    .search_memories(Some(&agent.id), &input.query, input.limit.unwrap_or(8).min(50) as i64)
+                    .search_memories(
+                        Some(&agent.id),
+                        &input.query,
+                        input.limit.unwrap_or(8).min(50) as i64,
+                    )
                     .await?;
                 self.emit(
                     session_id,
@@ -509,8 +515,9 @@ impl<A: ApprovalDelegate + Clone> AgentRuntime<A> {
                 })
             }
             "memory_write" => {
-                let input: MemoryWriteInput = serde_json::from_value(input)
-                    .map_err(|err| Agent1Error::Config(format!("invalid memory_write input: {err}")))?;
+                let input: MemoryWriteInput = serde_json::from_value(input).map_err(|err| {
+                    Agent1Error::Config(format!("invalid memory_write input: {err}"))
+                })?;
                 self.emit(
                     session_id,
                     &agent.id,
@@ -539,13 +546,15 @@ impl<A: ApprovalDelegate + Clone> AgentRuntime<A> {
                 )
                 .await?;
                 Ok(ToolResult {
-                    content: serde_json::to_string_pretty(&item).unwrap_or_else(|_| "{}".to_string()),
+                    content: serde_json::to_string_pretty(&item)
+                        .unwrap_or_else(|_| "{}".to_string()),
                     metadata: json!({"memory_id": item.id}),
                 })
             }
             "agent_call" => {
-                let input: AgentCallInput = serde_json::from_value(input)
-                    .map_err(|err| Agent1Error::Config(format!("invalid agent_call input: {err}")))?;
+                let input: AgentCallInput = serde_json::from_value(input).map_err(|err| {
+                    Agent1Error::Config(format!("invalid agent_call input: {err}"))
+                })?;
                 self.emit(
                     session_id,
                     &agent.id,
@@ -872,7 +881,11 @@ fn mcp_pool() -> &'static Mutex<HashMap<String, Arc<Mutex<McpSession>>>> {
     MCP_SESSION_POOL.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-pub async fn call_mcp_tool(server: &McpServerConfig, tool_name: &str, input: Value) -> Result<Value> {
+pub async fn call_mcp_tool(
+    server: &McpServerConfig,
+    tool_name: &str,
+    input: Value,
+) -> Result<Value> {
     let params = json!({
         "name": tool_name,
         "arguments": if input.is_null() { json!({}) } else { input }
@@ -965,7 +978,10 @@ fn mcp_server_key(server: &McpServerConfig) -> Result<String> {
     ))
 }
 
-async fn get_or_start_mcp_session(server: &McpServerConfig, key: &str) -> Result<Arc<Mutex<McpSession>>> {
+async fn get_or_start_mcp_session(
+    server: &McpServerConfig,
+    key: &str,
+) -> Result<Arc<Mutex<McpSession>>> {
     if let Some(existing) = mcp_pool().lock().await.get(key).cloned() {
         return Ok(existing);
     }
@@ -1081,7 +1097,9 @@ async fn call_mcp_on_session(
             .stdin
             .write_all(br#"{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}"#)
             .await
-            .map_err(|err| Agent1Error::Runtime(format!("failed to write MCP initialized: {err}")))?;
+            .map_err(|err| {
+                Agent1Error::Runtime(format!("failed to write MCP initialized: {err}"))
+            })?;
         session
             .stdin
             .write_all(b"\n")
@@ -1213,7 +1231,8 @@ mod tests {
     #[tokio::test]
     async fn runtime_executes_tool_and_records_approval() {
         let store = test_store("mock-tool").await;
-        let runtime = AgentRuntime::new(store.clone(), ToolRegistry::with_defaults(), TestApprovals);
+        let runtime =
+            AgentRuntime::new(store.clone(), ToolRegistry::with_defaults(), TestApprovals);
         let result = runtime
             .run(RunAgentRequest {
                 agent: test_agent("tool_file_list", vec!["file_list"]),
@@ -1232,7 +1251,8 @@ mod tests {
     #[tokio::test]
     async fn runtime_marks_session_failed_when_max_iterations_hit() {
         let store = test_store("mock-failure").await;
-        let runtime = AgentRuntime::new(store.clone(), ToolRegistry::with_defaults(), TestApprovals);
+        let runtime =
+            AgentRuntime::new(store.clone(), ToolRegistry::with_defaults(), TestApprovals);
         let result = runtime
             .run(RunAgentRequest {
                 agent: Agent {
@@ -1282,7 +1302,12 @@ mod tests {
                 workspace_root: PathBuf::from("."),
             })
             .await;
-        assert!(result.expect_err("disabled MCP should fail").to_string().contains("disabled"));
+        assert!(
+            result
+                .expect_err("disabled MCP should fail")
+                .to_string()
+                .contains("disabled")
+        );
     }
 
     #[tokio::test]
@@ -1309,7 +1334,8 @@ mod tests {
     }
 
     async fn test_store(name: &str) -> SqliteStore {
-        let path = PathBuf::from("target").join(format!("agent1-runtime-{name}-{}.db", new_id("test")));
+        let path =
+            PathBuf::from("target").join(format!("agent1-runtime-{name}-{}.db", new_id("test")));
         SqliteStore::connect(path).await.expect("test sqlite store")
     }
 

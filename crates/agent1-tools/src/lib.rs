@@ -768,6 +768,11 @@ mod tests {
                 },
             )
             .await;
-        assert!(result.expect_err("timeout expected").to_string().contains("timed out"));
+        assert!(
+            result
+                .expect_err("timeout expected")
+                .to_string()
+                .contains("timed out")
+        );
     }
 }

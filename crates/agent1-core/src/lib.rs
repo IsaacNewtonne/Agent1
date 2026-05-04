@@ -24,9 +24,16 @@ pub fn now() -> DateTime<Utc> {
 
 pub fn redact_secrets_text(input: &str) -> String {
     let lower = input.to_ascii_lowercase();
-    let has_secret_marker = ["api_key", "apikey", "token", "secret", "password", "authorization"]
-        .iter()
-        .any(|marker| lower.contains(marker));
+    let has_secret_marker = [
+        "api_key",
+        "apikey",
+        "token",
+        "secret",
+        "password",
+        "authorization",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker));
     if has_secret_marker {
         return input
             .lines()
@@ -83,7 +90,14 @@ fn redact_token(token: &str) -> String {
 
 fn redact_secret_line(line: &str) -> String {
     let lower = line.to_ascii_lowercase();
-    for marker in ["api_key", "apikey", "token", "secret", "password", "authorization"] {
+    for marker in [
+        "api_key",
+        "apikey",
+        "token",
+        "secret",
+        "password",
+        "authorization",
+    ] {
         if lower.contains(marker) {
             for separator in ["=", ":", " "] {
                 if let Some((left, _)) = line.split_once(separator) {
@@ -101,9 +115,16 @@ fn redact_secret_line(line: &str) -> String {
 
 fn is_secret_key(key: &str) -> bool {
     let key = key.to_ascii_lowercase();
-    ["api_key", "apikey", "token", "secret", "password", "authorization"]
-        .iter()
-        .any(|marker| key.contains(marker))
+    [
+        "api_key",
+        "apikey",
+        "token",
+        "secret",
+        "password",
+        "authorization",
+    ]
+    .iter()
+    .any(|marker| key.contains(marker))
 }
 
 #[derive(Debug, Error)]
@@ -174,16 +195,10 @@ fn default_temperature() -> f32 {
     0.2
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MemoryConfig {
     #[serde(default)]
     pub enabled: bool,
-}
-
-impl Default for MemoryConfig {
-    fn default() -> Self {
-        Self { enabled: false }
-    }
 }
 
 pub type PermissionPolicy = BTreeMap<String, PermissionMode>;

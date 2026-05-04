@@ -260,7 +260,11 @@ impl SqliteStore {
         .bind(&call.agent_id)
         .bind(&call.tool_name)
         .bind(redact_secrets_value(&call.input).to_string())
-        .bind(call.output.as_ref().map(|value| redact_secrets_value(value).to_string()))
+        .bind(
+            call.output
+                .as_ref()
+                .map(|value| redact_secrets_value(value).to_string()),
+        )
         .bind(json_name(&call.status)?)
         .bind(&call.error)
         .bind(call.started_at)
@@ -567,20 +571,24 @@ impl SqliteStore {
             .bind(id)
             .execute(&self.pool)
             .await
-            .map_err(|err| Agent1Error::Runtime(format!("failed to delete MCP server `{id}`: {err}")))?;
+            .map_err(|err| {
+                Agent1Error::Runtime(format!("failed to delete MCP server `{id}`: {err}"))
+            })?;
         Ok(())
     }
 
     pub async fn update_mcp_server_enabled(&self, id: &str, enabled: bool) -> Result<()> {
-        sqlx::query("UPDATE mcp_servers SET enabled = ?1, updated_at = ?2 WHERE id = ?3 OR name = ?3")
-            .bind(enabled)
-            .bind(now())
-            .bind(id)
-            .execute(&self.pool)
-            .await
-            .map_err(|err| {
-                Agent1Error::Runtime(format!("failed to update MCP server `{id}`: {err}"))
-            })?;
+        sqlx::query(
+            "UPDATE mcp_servers SET enabled = ?1, updated_at = ?2 WHERE id = ?3 OR name = ?3",
+        )
+        .bind(enabled)
+        .bind(now())
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(|err| {
+            Agent1Error::Runtime(format!("failed to update MCP server `{id}`: {err}"))
+        })?;
         Ok(())
     }
 
@@ -715,8 +723,9 @@ fn agent_from_row(row: sqlx::sqlite::SqliteRow) -> Result<Agent> {
             .map_err(|err| Agent1Error::Runtime(format!("invalid agent tools JSON: {err}")))?,
         memory: serde_json::from_str(&row.get::<String, _>("memory_config_json"))
             .map_err(|err| Agent1Error::Runtime(format!("invalid agent memory JSON: {err}")))?,
-        permissions: serde_json::from_str(&row.get::<String, _>("permissions_json"))
-            .map_err(|err| Agent1Error::Runtime(format!("invalid agent permissions JSON: {err}")))?,
+        permissions: serde_json::from_str(&row.get::<String, _>("permissions_json")).map_err(
+            |err| Agent1Error::Runtime(format!("invalid agent permissions JSON: {err}")),
+        )?,
         max_iterations: row.get::<i64, _>("max_iterations") as u32,
     })
 }
@@ -861,7 +870,10 @@ mod tests {
             .update_approval_decision(&approval.id, "approved")
             .await
             .expect("update approval");
-        let loaded = store.get_approval(&approval.id).await.expect("get approval");
+        let loaded = store
+            .get_approval(&approval.id)
+            .await
+            .expect("get approval");
         assert_eq!(loaded.decision.as_deref(), Some("approved"));
         assert!(loaded.decided_at.is_some());
     }

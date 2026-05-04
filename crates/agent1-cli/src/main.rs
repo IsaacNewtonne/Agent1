@@ -5,15 +5,6 @@ use std::{
     sync::Arc,
 };
 
-use axum::{
-    Json, Router,
-    body::Body,
-    extract::{DefaultBodyLimit, Path, State},
-    extract::ws::{Message, WebSocket, WebSocketUpgrade},
-    http::{HeaderMap, HeaderValue, Response, StatusCode, header},
-    response::IntoResponse,
-    routing::{get, post, delete},
-};
 use agent1_core::{
     Agent, Agent1Error, AgentCard, AgentSkill, EventType, McpServerConfig, MemoryItem, ModelConfig,
     RuntimeEvent, SessionStatus, new_id, now,
@@ -26,6 +17,15 @@ use agent1_runtime::{
 };
 use agent1_tools::ToolRegistry;
 use async_trait::async_trait;
+use axum::{
+    Json, Router,
+    body::Body,
+    extract::ws::{Message, WebSocket, WebSocketUpgrade},
+    extract::{DefaultBodyLimit, Path, State},
+    http::{HeaderMap, HeaderValue, Response, StatusCode, header},
+    response::IntoResponse,
+    routing::{delete, get, post},
+};
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -555,7 +555,9 @@ async fn main() -> anyhow::Result<()> {
             println!();
             println!("To use the desktop UI:");
             println!("  1. Start the API server:  agent1 server");
-            println!("  2. Launch the desktop app: npm run tauri:dev  (from the desktop/ directory)");
+            println!(
+                "  2. Launch the desktop app: npm run tauri:dev  (from the desktop/ directory)"
+            );
             println!("     Or double-click the built Agent1 Desktop application.");
             println!();
             println!("The desktop app connects to http://127.0.0.1:17371 automatically.");
@@ -740,7 +742,8 @@ impl IntoResponse for ApiError {
         let mut envelope = BTreeMap::new();
         envelope.insert("code", self.code.to_string());
         envelope.insert("message", self.message);
-        let mut response = (self.status, Json(ApiErrorEnvelope { error: envelope })).into_response();
+        let mut response =
+            (self.status, Json(ApiErrorEnvelope { error: envelope })).into_response();
         apply_common_headers(&mut response);
         response
     }
@@ -805,18 +808,33 @@ async fn run_server(bind: String, db: PathBuf, api_token: Option<String>) -> any
         .route("/api/events", get(api_events))
         .route("/api/approvals", get(api_approvals))
         .route("/api/models", get(api_models))
-        .route("/api/mcp/servers", get(api_mcp_servers).post(api_mcp_servers_create))
-        .route("/api/mcp/servers/{id}", delete(api_mcp_servers_delete).patch(api_mcp_servers_update))
+        .route(
+            "/api/mcp/servers",
+            get(api_mcp_servers).post(api_mcp_servers_create),
+        )
+        .route(
+            "/api/mcp/servers/{id}",
+            delete(api_mcp_servers_delete).patch(api_mcp_servers_update),
+        )
         .route("/api/mcp/servers/{id}/tools", get(api_mcp_servers_tools))
         .route("/api/mcp/servers/{id}/health", get(api_mcp_servers_health))
         .route("/api/memory", get(api_memory_search).post(api_memory_write))
         .route("/api/memory/{id}", delete(api_memory_delete))
         .route("/api/sessions/run", post(api_sessions_run))
-        .route("/api/sessions/{session_id}/run", post(api_sessions_run_for_id))
+        .route(
+            "/api/sessions/{session_id}/run",
+            post(api_sessions_run_for_id),
+        )
         .route("/api/sessions/{session_id}/trace", get(api_session_trace))
-        .route("/api/sessions/{session_id}/cancel", post(api_session_cancel))
+        .route(
+            "/api/sessions/{session_id}/cancel",
+            post(api_session_cancel),
+        )
         .route("/api/sessions/{session_id}/stream", get(api_session_stream))
-        .route("/api/tool-approvals/{approval_id}", post(api_tool_approval_decide))
+        .route(
+            "/api/tool-approvals/{approval_id}",
+            post(api_tool_approval_decide),
+        )
         .route("/api/agents/{agent_id}/tasks", post(api_agent_task))
         .route("/ws/events", get(ws_events))
         .route("/.well-known/agent.json", get(api_well_known_agent))
@@ -927,8 +945,13 @@ async fn api_sessions_create(
         .get("title")
         .and_then(Value::as_str)
         .map(ToString::to_string);
-    let session = state.store.create_session_shell(root_agent_id, title).await?;
-    Ok(json_ok(json!({"session_id": session.id, "session": session})))
+    let session = state
+        .store
+        .create_session_shell(root_agent_id, title)
+        .await?;
+    Ok(json_ok(
+        json!({"session_id": session.id, "session": session}),
+    ))
 }
 
 async fn api_events(
@@ -1078,7 +1101,9 @@ async fn api_memory_search(
         .store
         .search_memories(agent_id.map(String::as_str), &query, limit)
         .await?;
-    Ok(json_ok(json!({"memories": memories, "count": memories.len()})))
+    Ok(json_ok(
+        json!({"memories": memories, "count": memories.len()}),
+    ))
 }
 
 async fn api_memory_write(
@@ -1105,10 +1130,7 @@ async fn api_memory_write(
                 .collect()
         })
         .unwrap_or_default();
-    let importance = body
-        .get("importance")
-        .and_then(Value::as_i64)
-        .unwrap_or(0) as i32;
+    let importance = body.get("importance").and_then(Value::as_i64).unwrap_or(0) as i32;
     let agent_id = body.get("agent_id").and_then(Value::as_str);
     let timestamp = now();
     let item = MemoryItem {
@@ -1169,7 +1191,9 @@ async fn api_sessions_run_for_id(
 ) -> Result<Response<Body>, ApiError> {
     require_auth(&headers, &state)?;
     if let Some(object) = body.as_object_mut() {
-        object.entry("session_id".to_string()).or_insert(Value::String(session_id));
+        object
+            .entry("session_id".to_string())
+            .or_insert(Value::String(session_id));
     }
     Ok(json_ok(
         run_agent_http(body, &state.store, state.approval_broker.clone()).await?,
@@ -1182,7 +1206,9 @@ async fn api_session_trace(
     headers: HeaderMap,
 ) -> Result<Response<Body>, ApiError> {
     require_auth(&headers, &state)?;
-    Ok(json_ok(session_trace_http(&session_id, &state.store).await?))
+    Ok(json_ok(
+        session_trace_http(&session_id, &state.store).await?,
+    ))
 }
 
 async fn api_session_cancel(
@@ -1191,7 +1217,9 @@ async fn api_session_cancel(
     headers: HeaderMap,
 ) -> Result<Response<Body>, ApiError> {
     require_auth(&headers, &state)?;
-    Ok(json_ok(cancel_session_http(&session_id, &state.store).await?))
+    Ok(json_ok(
+        cancel_session_http(&session_id, &state.store).await?,
+    ))
 }
 
 async fn api_session_stream(
@@ -1200,11 +1228,15 @@ async fn api_session_stream(
     headers: HeaderMap,
 ) -> Result<Response<Body>, ApiError> {
     require_auth(&headers, &state)?;
-    let events = state.store.session_events(&session_id).await.unwrap_or_default();
-    
+    let events = state
+        .store
+        .session_events(&session_id)
+        .await
+        .unwrap_or_default();
+
     let mut output = String::new();
     output.push_str("event: iteration_start\ndata: {}\n\n");
-    
+
     for event in events.iter() {
         let event_type = match event.event_type {
             agent1_core::EventType::SessionStarted => "session_start",
@@ -1223,9 +1255,9 @@ async fn api_session_stream(
         let payload = serde_json::to_string(&event.payload).unwrap_or_else(|_| "{}".to_string());
         output.push_str(&format!("event: {}\ndata: {}\n\n", event_type, payload));
     }
-    
+
     output.push_str("event: final\ndata: \"done\"\n\n");
-    
+
     let mut response = Response::new(Body::from(output));
     response.headers_mut().insert(
         header::CONTENT_TYPE,
@@ -1247,7 +1279,9 @@ async fn api_tool_approval_decide(
         .and_then(Value::as_str)
         .ok_or_else(|| ApiError::bad_request("missing decision"))?;
     apply_approval_decision(&state.store, &state.approval_broker, &approval_id, decision).await?;
-    Ok(json_ok(json!({"approval_id": approval_id, "decision": decision})))
+    Ok(json_ok(
+        json!({"approval_id": approval_id, "decision": decision}),
+    ))
 }
 
 async fn api_agent_task(
@@ -1334,8 +1368,13 @@ async fn handle_ws_client_message(
     if message.message_type != "approval_decision" {
         return Ok(None);
     }
-    apply_approval_decision(store, approval_broker, &message.approval_id, &message.decision)
-        .await?;
+    apply_approval_decision(
+        store,
+        approval_broker,
+        &message.approval_id,
+        &message.decision,
+    )
+    .await?;
     Ok(Some(
         json!({
             "type": "approval_decision_ack",
@@ -1369,7 +1408,9 @@ async fn apply_approval_decision(
     decision: &str,
 ) -> Result<(), Agent1Error> {
     let _ = parse_approval_decision(decision)?;
-    store.update_approval_decision(approval_id, decision).await?;
+    store
+        .update_approval_decision(approval_id, decision)
+        .await?;
     approval_broker.resolve(approval_id, decision).await;
     Ok(())
 }
@@ -1459,10 +1500,7 @@ async fn run_agent_http(
         .get("input")
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow::anyhow!("missing input"))?;
-    let workspace = body
-        .get("workspace")
-        .and_then(Value::as_str)
-        .unwrap_or(".");
+    let workspace = body.get("workspace").and_then(Value::as_str).unwrap_or(".");
     let agent = store.get_agent(agent_id).await?;
     let runtime = AgentRuntime::new(
         store.clone(),
