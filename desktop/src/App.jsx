@@ -388,7 +388,7 @@ export default function App() {
         <div className="canvas-header">
           <div className="project-icon">
             <div className="icon-frame">
-              <span>A1</span>
+              <img src="/icons/logo.png" alt="Agent1" style={{ width: "96px", height: "96px", objectFit: "contain", borderRadius: "50%", background: "transparent" }} />
             </div>
             <span className="project-name">Agent1</span>
           </div>
