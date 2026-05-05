@@ -15,3 +15,5 @@ target-*/
 Thumbs.db
 desktop/src-tauri/target/
 desktop/src-tauri/icons/
+whatsapp-sidecar/node_modules/
+whatsapp-sidecar/.wa-sessions/

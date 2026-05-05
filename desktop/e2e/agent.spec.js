@@ -8,7 +8,8 @@ test.describe('Agent1 Desktop UI', () => {
   });
 
   test('loads the app', async ({ page }) => {
-    await expect(page.locator('h1')).toContainText('Command Atlas');
+    await expect(page.locator('text=Talk to Agent1')).toBeVisible();
+    await expect(page.locator('.agent1-core-button')).toBeVisible();
   });
 
   test('shows control surface settings', async ({ page }) => {

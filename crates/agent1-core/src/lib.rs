@@ -13,6 +13,10 @@ pub type EventId = String;
 pub type ToolCallId = String;
 pub type MemoryId = String;
 pub type ApprovalId = String;
+pub type PlanId = String;
+pub type StepId = String;
+pub type OrchestrationId = String;
+pub type EscalationId = String;
 
 pub fn new_id(prefix: &str) -> String {
     format!("{prefix}_{}", Uuid::now_v7().simple())
@@ -295,6 +299,15 @@ pub enum EventType {
     RunCancelled,
     FinalAnswer,
     Error,
+    OrchestrationStarted,
+    PlanCreated,
+    StepStarted,
+    StepCompleted,
+    StepFailed,
+    EscalationCreated,
+    EscalationResolved,
+    AgentCreated,
+    AgentTerminated,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -428,6 +441,328 @@ pub struct ToolResult {
     pub content: String,
     #[serde(default)]
     pub metadata: Value,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentRole {
+    Orchestrator,
+    Planner,
+    Worker,
+    Critic,
+    Researcher,
+    Builder,
+    Reporter,
+}
+
+impl AgentRole {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AgentRole::Orchestrator => "orchestrator",
+            AgentRole::Planner => "planner",
+            AgentRole::Worker => "worker",
+            AgentRole::Critic => "critic",
+            AgentRole::Researcher => "researcher",
+            AgentRole::Builder => "builder",
+            AgentRole::Reporter => "reporter",
+        }
+    }
+
+    pub fn default_system_prompt(&self) -> &'static str {
+        match self {
+            AgentRole::Orchestrator => {
+                "You are Agent1, the central orchestrator. Your role is to receive high-level objectives from the user, decompose them into execution plans, create and manage specialized agents, coordinate their work, and report progress back. You make autonomous decisions about how to achieve goals while escalating security-sensitive actions to the user."
+            }
+            AgentRole::Planner => {
+                "You are a Planner agent. Your role is to analyze objectives and create detailed execution plans. Break complex goals into ordered steps, identify dependencies, determine what specialized agents are needed for each step, and anticipate potential issues. Be thorough and consider edge cases."
+            }
+            AgentRole::Worker => {
+                "You are a Worker agent. Your role is to execute assigned tasks according to specifications. Follow instructions precisely, use available tools to accomplish your assigned step, and report results clearly. If you encounter blockers, explain them and suggest alternatives."
+            }
+            AgentRole::Critic => {
+                "You are a Critic agent. Your role is to review and quality-check the work of other agents. Evaluate outputs for correctness, completeness, safety, and alignment with requirements. Identify gaps, suggest improvements, and approve or reject work. Be thorough and constructive."
+            }
+            AgentRole::Researcher => {
+                "You are a Researcher agent. Your role is to gather information, analyze data, and provide factual findings to support planning and execution. Search for relevant information, summarize findings, and identify knowledge gaps."
+            }
+            AgentRole::Builder => {
+                "You are a Builder agent. Your role is to create artifacts — code, documents, infrastructure, or other tangible outputs. Follow specifications precisely, write high-quality work, and iterate based on feedback."
+            }
+            AgentRole::Reporter => {
+                "You are a Reporter agent. Your role is to compile findings, progress updates, and final summaries. Synthesize information from multiple sources into clear, actionable reports for users and other agents."
+            }
+        }
+    }
+}
+
+impl OrchestrationSession {
+    pub fn new(objective: String) -> Self {
+        let now = now();
+        Self {
+            id: new_id("orch"),
+            objective,
+            plan_id: None,
+            status: OrchestrationStatus::Received,
+            created_at: now,
+            updated_at: now,
+            completed_at: None,
+        }
+    }
+}
+
+impl ExecutionPlan {
+    pub fn new(orchestration_id: OrchestrationId, objective: String, raw_goal: String) -> Self {
+        Self {
+            id: new_id("plan"),
+            orchestration_id,
+            objective,
+            raw_goal,
+            status: PlanStatus::Draft,
+            created_at: now(),
+            completed_at: None,
+        }
+    }
+}
+
+impl ExecutionStep {
+    pub fn new(
+        plan_id: PlanId,
+        description: String,
+        step_order: usize,
+        dependencies: Vec<StepId>,
+    ) -> Self {
+        Self {
+            id: new_id("step"),
+            plan_id,
+            description,
+            step_order,
+            assigned_agent_id: None,
+            assigned_role: None,
+            dependencies,
+            status: StepStatus::Pending,
+            output: None,
+            review_notes: None,
+            created_at: now(),
+            started_at: None,
+            completed_at: None,
+        }
+    }
+
+    pub fn assign(&mut self, agent_id: AgentId, role: AgentRole) {
+        self.assigned_agent_id = Some(agent_id);
+        self.assigned_role = Some(role);
+    }
+
+    pub fn start(&mut self) {
+        self.status = StepStatus::InProgress;
+        self.started_at = Some(now());
+    }
+
+    pub fn complete(&mut self, output: String) {
+        self.status = StepStatus::Completed;
+        self.output = Some(output);
+        self.completed_at = Some(now());
+    }
+
+    pub fn fail(&mut self, error: String) {
+        self.status = StepStatus::Failed;
+        self.output = Some(error);
+        self.completed_at = Some(now());
+    }
+}
+
+impl EscalationRecord {
+    pub fn new(
+        orchestration_id: OrchestrationId,
+        step_id: Option<StepId>,
+        escalation_type: EscalationType,
+        description: String,
+        payload: Value,
+    ) -> Self {
+        Self {
+            id: new_id("esc"),
+            orchestration_id,
+            step_id,
+            escalation_type,
+            description,
+            payload,
+            status: EscalationStatus::Pending,
+            response: None,
+            created_at: now(),
+            resolved_at: None,
+        }
+    }
+
+    pub fn resolve(&mut self, response: String) {
+        self.status = EscalationStatus::Resolved;
+        self.response = Some(response);
+        self.resolved_at = Some(now());
+    }
+
+    pub fn decline(&mut self, reason: String) {
+        self.status = EscalationStatus::Declined;
+        self.response = Some(reason);
+        self.resolved_at = Some(now());
+    }
+}
+
+impl OrchestrationStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            OrchestrationStatus::Received => "received",
+            OrchestrationStatus::Planning => "planning",
+            OrchestrationStatus::Executing => "executing",
+            OrchestrationStatus::WaitingApproval => "waiting_approval",
+            OrchestrationStatus::Completed => "completed",
+            OrchestrationStatus::Failed => "failed",
+            OrchestrationStatus::Cancelled => "cancelled",
+        }
+    }
+}
+
+impl StepStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            StepStatus::Pending => "pending",
+            StepStatus::InProgress => "in_progress",
+            StepStatus::Completed => "completed",
+            StepStatus::Blocked => "blocked",
+            StepStatus::NeedsReview => "needs_review",
+            StepStatus::Failed => "failed",
+        }
+    }
+}
+
+pub fn check_escalation_triggers(content: &str) -> Option<(EscalationType, String)> {
+    let content_lower = content.to_lowercase();
+
+    let security_triggers = ["api_key", "apikey", "secret", "password", "token", "authorization"];
+    if security_triggers.iter().any(|t| content_lower.contains(t)) {
+        return Some((EscalationType::Security, "Operation involves security-sensitive data".to_string()));
+    }
+
+    let finance_triggers = ["payment", "billing", "purchase", "subscription", "invoice", "refund"];
+    if finance_triggers.iter().any(|t| content_lower.contains(t)) {
+        return Some((EscalationType::Finance, "Operation involves financial transaction".to_string()));
+    }
+
+    let access_triggers = ["oauth", "connect_account", "authentication", "login"];
+    if access_triggers.iter().any(|t| content_lower.contains(t)) {
+        return Some((EscalationType::Access, "Operation requires account access".to_string()));
+    }
+
+    let identity_triggers = ["email", "phone", "send_sms", "send_email"];
+    if identity_triggers.iter().any(|t| content_lower.contains(t)) {
+        return Some((EscalationType::Identity, "Operation involves personal identity data".to_string()));
+    }
+
+    None
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionStep {
+    pub id: StepId,
+    pub plan_id: PlanId,
+    pub description: String,
+    pub step_order: usize,
+    pub assigned_agent_id: Option<AgentId>,
+    pub assigned_role: Option<AgentRole>,
+    pub dependencies: Vec<StepId>,
+    pub status: StepStatus,
+    pub output: Option<String>,
+    pub review_notes: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub started_at: Option<DateTime<Utc>>,
+    pub completed_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionPlan {
+    pub id: PlanId,
+    pub orchestration_id: OrchestrationId,
+    pub objective: String,
+    pub raw_goal: String,
+    pub status: PlanStatus,
+    pub created_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanStatus {
+    Draft,
+    Planned,
+    InProgress,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StepStatus {
+    Pending,
+    InProgress,
+    Completed,
+    Blocked,
+    NeedsReview,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrchestrationSession {
+    pub id: OrchestrationId,
+    pub objective: String,
+    pub plan_id: Option<PlanId>,
+    pub status: OrchestrationStatus,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OrchestrationStatus {
+    Received,
+    Planning,
+    Executing,
+    WaitingApproval,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EscalationRecord {
+    pub id: EscalationId,
+    pub orchestration_id: OrchestrationId,
+    pub step_id: Option<StepId>,
+    pub escalation_type: EscalationType,
+    pub description: String,
+    pub payload: Value,
+    pub status: EscalationStatus,
+    pub response: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub resolved_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EscalationType {
+    Security,
+    Finance,
+    Access,
+    Identity,
+    Approval,
+    External,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EscalationStatus {
+    Pending,
+    Resolved,
+    Declined,
 }
 
 #[cfg(test)]

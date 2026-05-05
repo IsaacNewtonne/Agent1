@@ -9,6 +9,7 @@ use chrono::{DateTime, Utc};
 use sqlx::{Executor, Row, SqlitePool, sqlite::SqliteConnectOptions};
 
 const INITIAL_SCHEMA: &str = include_str!("../migrations/0001_initial.sql");
+const ORCHESTRATOR_SCHEMA: &str = include_str!("../migrations/0002_orchestrator.sql");
 
 #[derive(Clone)]
 pub struct SqliteStore {
@@ -16,6 +17,9 @@ pub struct SqliteStore {
 }
 
 impl SqliteStore {
+    pub fn pool(&self) -> &SqlitePool {
+        &self.pool
+    }
     pub async fn connect(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         if let Some(parent) = path.parent() {
@@ -39,7 +43,11 @@ impl SqliteStore {
         self.pool
             .execute(INITIAL_SCHEMA)
             .await
-            .map_err(|err| Agent1Error::Runtime(format!("failed to run migrations: {err}")))?;
+            .map_err(|err| Agent1Error::Runtime(format!("failed to run initial migration: {err}")))?;
+        self.pool
+            .execute(ORCHESTRATOR_SCHEMA)
+            .await
+            .map_err(|err| Agent1Error::Runtime(format!("failed to run orchestrator migration: {err}")))?;
         Ok(())
     }
 

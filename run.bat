@@ -3,35 +3,59 @@ setlocal enabledelayedexpansion
 
 echo Agent1 - Starting
 echo ==============
+echo.
 
-echo [1/3] Starting API server in background...
-start /b "Agent1 Server" cargo run -q --bin agent1 -- server
-
-echo Waiting for server to start...
-timeout /t 2 /nobreak >nul
-
-echo [2/3] Building and opening desktop UI...
-cd desktop
-call npm install
-call npm run tauri:build
-cd ..
-
-echo [3/3] Launching desktop...
-for /r "desktop\src-tauri\target\release" %%f in (*.exe) do (
-    start "" "%%f"
-    goto :found
-)
-
-:found
-if not defined found (
-    echo ERROR: Could not find built exe
+REM Check for Node.js
+where node >nul 2>&1
+if %ERRORLEVEL% neq 0 (
+    echo ERROR: Node.js is not installed. Please install from https://nodejs.org
     exit /b 1
 )
 
+REM Check for Rust/Cargo
+where cargo >nul 2>&1
+if %ERRORLEVEL% neq 0 (
+    echo ERROR: Rust is not installed. Please install from https://rustup.rs
+    exit /b 1
+)
+
+echo [1/4] Checking WhatsApp sidecar...
+cd /d "%~dp0whatsapp-sidecar"
+if not exist "node_modules" (
+    echo Installing WhatsApp sidecar dependencies...
+    call npm install --yes
+)
+cd /d "%~dp0"
+
+echo [2/4] Starting WhatsApp sidecar in background...
+start /b "WhatsApp Sidecar" cmd /c "cd /d %~dp0whatsapp-sidecar && npm start"
+
+echo Waiting for sidecar to start...
+timeout /t 3 /nobreak >nul
+
+echo [3/4] Starting API server in background...
+start /b "Agent1 Server" cmd /c "cargo run --bin agent1 -- server"
+
+echo Waiting for server to start...
+timeout /t 3 /nobreak >nul
+
+echo [4/4] Building desktop UI...
+cd desktop
+if not exist "node_modules" (
+    echo Installing desktop dependencies...
+    call npm install
+)
+call npm run build
+cd ..
+
 echo.
 echo Agent1 is starting!
+echo ==============
 echo - API Server: http://127.0.0.1:17371
-echo - Desktop: Should open automatically
+echo - WhatsApp Sidecar: http://127.0.0.1:17372
 echo.
-echo Press any key to exit this window...
-pause >nul
+echo Starting Tauri dev mode...
+echo.
+cd desktop
+call npm run tauri:dev
+cd ..

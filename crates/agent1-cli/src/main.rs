@@ -1,7 +1,9 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     io::{self, Write},
+    net::TcpStream,
     path::PathBuf,
+    process::{Command as StdCommand, Stdio},
     sync::Arc,
 };
 
@@ -16,13 +18,14 @@ use agent1_runtime::{
     list_mcp_tools, runtime_tool_definition, shutdown_mcp_pool,
 };
 use agent1_tools::ToolRegistry;
+use agent1_whatsapp::WhatsAppService;
 use async_trait::async_trait;
 use axum::{
     Json, Router,
     body::Body,
     extract::ws::{Message, WebSocket, WebSocketUpgrade},
     extract::{DefaultBodyLimit, Path, State},
-    http::{HeaderMap, HeaderValue, Response, StatusCode, header},
+    http::{HeaderMap, HeaderValue, Method, Response, StatusCode, header},
     response::IntoResponse,
     routing::{delete, get, post},
 };
@@ -35,6 +38,7 @@ use tokio::{
     time::{Duration, sleep, timeout},
 };
 use tracing_subscriber::EnvFilter;
+use tower_http::cors::{Any, CorsLayer};
 
 #[derive(Debug, Parser)]
 #[command(name = "agent1", version, about = "Local-first personal agent runtime")]
@@ -642,6 +646,7 @@ struct HttpState {
     store: SqliteStore,
     api_token: Option<String>,
     approval_broker: Arc<ApprovalBroker>,
+    whatsapp: Arc<WhatsAppService>,
 }
 
 #[derive(Default)]
@@ -764,6 +769,19 @@ fn apply_common_headers(response: &mut Response<Body>) {
     );
 }
 
+fn cors_layer() -> CorsLayer {
+    CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PATCH,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION])
+}
+
 fn json_ok(value: Value) -> Response<Body> {
     let mut response = Json(value).into_response();
     apply_common_headers(&mut response);
@@ -796,6 +814,10 @@ async fn run_server(bind: String, db: PathBuf, api_token: Option<String>) -> any
     }
     let store = SqliteStore::connect(db).await?;
     let approval_broker = Arc::new(ApprovalBroker::default());
+    if let Err(err) = bootstrap_whatsapp_sidecar() {
+        eprintln!("WhatsApp sidecar bootstrap skipped: {err}");
+    }
+    let whatsapp_service = Arc::new(WhatsAppService::new());
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     println!("Agent1 API listening on http://{bind}");
 
@@ -839,13 +861,21 @@ async fn run_server(bind: String, db: PathBuf, api_token: Option<String>) -> any
         .route("/ws/events", get(ws_events))
         .route("/.well-known/agent.json", get(api_well_known_agent))
         .route("/api/health", get(api_health))
+        .route("/api/whatsapp/status", get(api_whatsapp_status))
+        .route("/api/whatsapp/connect", post(api_whatsapp_connect))
+        .route("/api/whatsapp/disconnect", post(api_whatsapp_disconnect))
+        .route("/api/whatsapp/reset", post(api_whatsapp_reset))
+        .route("/api/whatsapp/qr", get(api_whatsapp_qr))
+        .route("/api/whatsapp/send", post(api_whatsapp_send))
         .route("/{*path}", axum::routing::options(api_options))
         .fallback(api_not_found)
         .layer(DefaultBodyLimit::max(256 * 1024))
+        .layer(cors_layer())
         .with_state(HttpState {
             store,
             api_token,
             approval_broker,
+            whatsapp: whatsapp_service,
         });
 
     let server = axum::serve(listener, app);
@@ -857,6 +887,50 @@ async fn run_server(bind: String, db: PathBuf, api_token: Option<String>) -> any
 
     server.await?;
     Ok(())
+}
+
+fn bootstrap_whatsapp_sidecar() -> anyhow::Result<()> {
+    if TcpStream::connect("127.0.0.1:17372").is_ok() {
+        return Ok(());
+    }
+
+    let sidecar_dir = std::env::current_dir()?.join("whatsapp-sidecar");
+    if !sidecar_dir.join("package.json").exists() {
+        anyhow::bail!(
+            "whatsapp-sidecar/package.json not found from {}",
+            std::env::current_dir()?.display()
+        );
+    }
+
+    if !sidecar_dir.join("node_modules").exists() {
+        println!("Installing WhatsApp sidecar dependencies...");
+        let status = StdCommand::new(npm_command())
+            .arg("install")
+            .current_dir(&sidecar_dir)
+            .status()?;
+        if !status.success() {
+            anyhow::bail!("npm install failed for WhatsApp sidecar");
+        }
+    }
+
+    println!("Starting WhatsApp sidecar on http://127.0.0.1:17372");
+    StdCommand::new(npm_command())
+        .arg("start")
+        .current_dir(sidecar_dir)
+        .env("PORT", "17372")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    Ok(())
+}
+
+fn npm_command() -> &'static str {
+    if cfg!(windows) {
+        "npm.cmd"
+    } else {
+        "npm"
+    }
 }
 
 async fn static_index() -> Result<Response<Body>, ApiError> {
@@ -900,6 +974,72 @@ async fn api_not_found() -> Result<Response<Body>, ApiError> {
 
 async fn api_health() -> Result<Response<Body>, ApiError> {
     Ok(json_ok(json!({"ok": true, "service": "agent1-api"})))
+}
+
+async fn api_whatsapp_status(
+    State(state): State<HttpState>,
+) -> Result<Response<Body>, ApiError> {
+    let status = state.whatsapp.get_status().await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    Ok(json_ok(serde_json::to_value(status)
+        .map_err(|e| ApiError::internal(e.to_string()))?))
+}
+
+async fn api_whatsapp_connect(
+    State(state): State<HttpState>,
+) -> Result<Response<Body>, ApiError> {
+    state.whatsapp.connect().await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    Ok(json_ok(json!({"status": "connecting"})))
+}
+
+async fn api_whatsapp_disconnect(
+    State(state): State<HttpState>,
+) -> Result<Response<Body>, ApiError> {
+    state.whatsapp.disconnect().await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    Ok(json_ok(json!({"status": "disconnected"})))
+}
+
+async fn api_whatsapp_reset(
+    State(state): State<HttpState>,
+) -> Result<Response<Body>, ApiError> {
+    state.whatsapp.reset().await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    Ok(json_ok(json!({"status": "reset"})))
+}
+
+async fn api_whatsapp_qr(
+    State(state): State<HttpState>,
+) -> Result<Response<Body>, ApiError> {
+    match state.whatsapp.get_qr_svg().await {
+        Ok(Some(svg)) => {
+            let mut response = Response::new(Body::from(svg));
+            response.headers_mut().insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("image/svg+xml"),
+            );
+            Ok(response)
+        }
+        Ok(None) => {
+            Ok(json_ok(json!({"qr": null, "message": "no qr available"})))
+        }
+        Err(e) => Err(ApiError::internal(e.to_string())),
+    }
+}
+
+async fn api_whatsapp_send(
+    State(state): State<HttpState>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Response<Body>, ApiError> {
+    let to = payload["to"].as_str().ok_or_else(|| ApiError::bad_request("missing 'to' field"))?;
+    let text = payload["text"].as_str().ok_or_else(|| ApiError::bad_request("missing 'text' field"))?;
+
+    match state.whatsapp.send_message(to, text).await {
+        Ok(result) => Ok(json_ok(serde_json::to_value(result)
+            .map_err(|e| ApiError::internal(e.to_string()))?)),
+        Err(e) => Err(ApiError::internal(e.to_string())),
+    }
 }
 
 async fn api_agents(
@@ -1435,15 +1575,35 @@ async fn session_trace_http(session_id: &str, store: &SqliteStore) -> anyhow::Re
 }
 
 async fn list_models_http() -> anyhow::Result<Value> {
-    let configs = [ModelConfig {
-        provider: "ollama".to_string(),
-        model: "unused".to_string(),
-        base_url: None,
-        context_window: 8192,
-        temperature: 0.2,
-        top_p: None,
-        max_tokens: None,
-    }];
+    let configs = [
+        ModelConfig {
+            provider: "opencode".to_string(),
+            model: "unused".to_string(),
+            base_url: None,
+            context_window: 8192,
+            temperature: 0.2,
+            top_p: None,
+            max_tokens: None,
+        },
+        ModelConfig {
+            provider: "ollama".to_string(),
+            model: "unused".to_string(),
+            base_url: None,
+            context_window: 8192,
+            temperature: 0.2,
+            top_p: None,
+            max_tokens: None,
+        },
+        ModelConfig {
+            provider: "openai_compatible".to_string(),
+            model: "unused".to_string(),
+            base_url: None,
+            context_window: 8192,
+            temperature: 0.2,
+            top_p: None,
+            max_tokens: None,
+        },
+    ];
     let mut providers = Vec::new();
     for config in configs {
         let result = match provider_for(&config) {

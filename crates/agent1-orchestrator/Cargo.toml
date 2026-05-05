@@ -1,0 +1,28 @@
+[package]
+name = "agent1-orchestrator"
+edition = "2021"
+version = "0.1.0"
+description = "Agent1 orchestrator - goal decomposition and multi-agent coordination"
+license = "MIT OR Apache-2.0"
+repository = "https://example.local/agent1"
+
+[dependencies]
+agent1-core = { path = "../agent1-core" }
+agent1-runtime = { path = "../agent1-runtime" }
+agent1-db = { path = "../agent1-db" }
+agent1-models = { path = "../agent1-models" }
+agent1-tools = { path = "../agent1-tools" }
+anyhow.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx = { workspace = true, features = ["runtime-tokio-rustls", "sqlite"] }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+futures-util.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,0 +1,24 @@
+﻿<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="disc" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(420 338) rotate(54) scale(620)">
+      <stop offset="0" stop-color="#0b4f4d"/>
+      <stop offset="0.48" stop-color="#06292e"/>
+      <stop offset="1" stop-color="#020817"/>
+    </radialGradient>
+    <filter id="cyanGlow" x="112" y="112" width="800" height="800" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="19" result="blur"/>
+      <feColorMatrix in="blur" type="matrix" values="0 0 0 0 0.00 0 0 0 0 1.00 0 0 0 0 0.89 0 0 0 0.72 0"/>
+      <feBlend in="SourceGraphic"/>
+    </filter>
+    <filter id="textShadow" x="240" y="314" width="560" height="310" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="8" stdDeviation="9" flood-color="#000814" flood-opacity="0.45"/>
+    </filter>
+  </defs>
+  <circle cx="512" cy="512" r="364" fill="#031018" opacity="0.92"/>
+  <circle cx="512" cy="512" r="337" fill="url(#disc)" stroke="#04151d" stroke-width="20"/>
+  <g filter="url(#cyanGlow)">
+    <circle cx="512" cy="512" r="314" stroke="#12f5df" stroke-width="28"/>
+  </g>
+  <circle cx="512" cy="512" r="357" stroke="#092b31" stroke-width="22" opacity="0.88"/>
+  <text x="512" y="610" text-anchor="middle" font-family="Arial Black, Arial, sans-serif" font-size="270" font-weight="900" letter-spacing="-18" fill="#f8fbff" filter="url(#textShadow)">A1</text>
+</svg>

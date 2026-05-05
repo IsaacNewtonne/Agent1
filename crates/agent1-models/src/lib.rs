@@ -6,7 +6,8 @@ use async_trait::async_trait;
 use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
+use tokio::process::Command;
 
 #[async_trait]
 pub trait ModelProvider: Send + Sync {
@@ -25,12 +26,136 @@ pub fn provider_for(config: &ModelConfig) -> Result<Box<dyn ModelProvider>> {
     match config.provider.as_str() {
         "mock" => Ok(Box::new(MockProvider)),
         "ollama" => Ok(Box::new(OllamaProvider::new())),
+        "opencode" => Ok(Box::new(OpenCodeProvider)),
         "openai_compatible" | "openai-compatible" | "local_openai" => {
             Ok(Box::new(OpenAiCompatibleProvider::new()))
         }
         other => Err(Agent1Error::Config(format!(
             "unsupported model provider `{other}`"
         ))),
+    }
+}
+
+pub struct OpenCodeProvider;
+
+#[async_trait]
+impl ModelProvider for OpenCodeProvider {
+    async fn chat(&self, request: ChatRequest) -> Result<ChatResponse> {
+        let prompt = request
+            .messages
+            .iter()
+            .map(|message| format!("{}: {}", message.role, message.content))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let output = Command::new(opencode_command())
+            .args(["run", "--model", &request.model.model, "--format", "json", &prompt])
+            .output()
+            .await
+            .map_err(|err| {
+                Agent1Error::Runtime(format!(
+                    "opencode executable unavailable; install opencode or ensure it is on PATH: {err}"
+                ))
+            })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            return Err(Agent1Error::Runtime(format!(
+                "opencode run failed: {}",
+                if stderr.is_empty() {
+                    format!("exit status {}", output.status)
+                } else {
+                    stderr
+                }
+            )));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let content = extract_opencode_content(&stdout).unwrap_or_else(|| stdout.trim().to_string());
+        if content.is_empty() {
+            return Err(Agent1Error::InvalidModelResponse(
+                "opencode returned no content".to_string(),
+            ));
+        }
+        Ok(ChatResponse { content })
+    }
+
+    async fn list_models(&self, _config: &ModelConfig) -> Result<Vec<ModelInfo>> {
+        let output = Command::new(opencode_command())
+            .arg("models")
+            .output()
+            .await
+            .map_err(|err| {
+                Agent1Error::Runtime(format!(
+                    "opencode executable unavailable; install opencode or ensure it is on PATH: {err}"
+                ))
+            })?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            return Err(Agent1Error::Runtime(format!(
+                "opencode models failed: {}",
+                if stderr.is_empty() {
+                    format!("exit status {}", output.status)
+                } else {
+                    stderr
+                }
+            )));
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        Ok(stdout
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(|name| ModelInfo {
+                provider: "opencode".to_string(),
+                name: name.to_string(),
+            })
+            .collect())
+    }
+}
+
+fn opencode_command() -> &'static str {
+    if cfg!(windows) {
+        "opencode.cmd"
+    } else {
+        "opencode"
+    }
+}
+
+fn extract_opencode_content(stdout: &str) -> Option<String> {
+    let mut parts = Vec::new();
+    for line in stdout.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        collect_content_fields(&value, &mut parts);
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(""))
+    }
+}
+
+fn collect_content_fields(value: &Value, parts: &mut Vec<String>) {
+    match value {
+        Value::Object(map) => {
+            for key in ["content", "text", "delta"] {
+                if let Some(text) = map.get(key).and_then(Value::as_str) {
+                    if !text.is_empty() {
+                        parts.push(text.to_string());
+                    }
+                }
+            }
+            for nested in map.values() {
+                collect_content_fields(nested, parts);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_content_fields(item, parts);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -211,10 +336,10 @@ impl ModelProvider for OllamaProvider {
                 if packet.done {
                     continue;
                 }
-                if let Some(message) = packet.message
-                    && !message.content.is_empty()
-                {
-                    chunks.push(message.content);
+                if let Some(message) = packet.message {
+                    if !message.content.is_empty() {
+                        chunks.push(message.content);
+                    }
                 }
             }
         }
@@ -225,12 +350,13 @@ impl ModelProvider for OllamaProvider {
                         "ollama trailing stream packet was not JSON: {err}"
                     ))
                 })?;
-            if !packet.done
-                && let Some(message) = packet.message
-                && !message.content.is_empty()
-            {
-                chunks.push(message.content);
+            if !packet.done {
+            if let Some(message) = packet.message {
+                if !message.content.is_empty() {
+                    chunks.push(message.content);
+                }
             }
+        }
         }
         if chunks.is_empty() {
             return Err(Agent1Error::InvalidModelResponse(
@@ -386,13 +512,14 @@ impl ModelProvider for OpenAiCompatibleProvider {
                         Ok(c) => c,
                         Err(_) => continue,
                     };
-                    if let Some(choice) = chunk.choices.into_iter().next()
-                        && choice.finish_reason.is_none()
-                        && let Some(content) = choice.delta.content
-                        && !content.is_empty()
-                    {
-                        chunks.push(content);
-                    }
+                    let Some(choice) = chunk.choices.into_iter().next() else { continue };
+                        if choice.finish_reason.is_none() {
+                            if let Some(content) = choice.delta.content {
+                                if !content.is_empty() {
+                                    chunks.push(content);
+                                }
+                            }
+                        }
                 }
             }
         }
