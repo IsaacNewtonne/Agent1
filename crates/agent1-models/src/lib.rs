@@ -7,6 +7,7 @@ use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::{env, path::PathBuf};
 use tokio::process::Command;
 
 #[async_trait]
@@ -47,15 +48,17 @@ impl ModelProvider for OpenCodeProvider {
             .map(|message| format!("{}: {}", message.role, message.content))
             .collect::<Vec<_>>()
             .join("\n\n");
-        let output = Command::new(opencode_command())
-            .args(["run", "--model", &request.model.model, "--format", "json", &prompt])
-            .output()
-            .await
-            .map_err(|err| {
-                Agent1Error::Runtime(format!(
-                    "opencode executable unavailable; install opencode or ensure it is on PATH: {err}"
-                ))
-            })?;
+        let invocation = opencode_invocation();
+        let mut command = Command::new(&invocation.command);
+        command
+            .args(&invocation.prefix_args)
+            .args(["run", "--model", &request.model.model, "--format", "json"])
+            .arg(&prompt);
+        let output = command.output().await.map_err(|err| {
+            Agent1Error::Runtime(format!(
+                "opencode executable unavailable; install opencode or ensure it is on PATH: {err}"
+            ))
+        })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -80,15 +83,14 @@ impl ModelProvider for OpenCodeProvider {
     }
 
     async fn list_models(&self, _config: &ModelConfig) -> Result<Vec<ModelInfo>> {
-        let output = Command::new(opencode_command())
-            .arg("models")
-            .output()
-            .await
-            .map_err(|err| {
-                Agent1Error::Runtime(format!(
-                    "opencode executable unavailable; install opencode or ensure it is on PATH: {err}"
-                ))
-            })?;
+        let invocation = opencode_invocation();
+        let mut command = Command::new(&invocation.command);
+        command.args(&invocation.prefix_args).arg("models");
+        let output = command.output().await.map_err(|err| {
+            Agent1Error::Runtime(format!(
+                "opencode executable unavailable; install opencode or ensure it is on PATH: {err}"
+            ))
+        })?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
             return Err(Agent1Error::Runtime(format!(
@@ -113,12 +115,49 @@ impl ModelProvider for OpenCodeProvider {
     }
 }
 
-fn opencode_command() -> &'static str {
+struct OpenCodeInvocation {
+    command: String,
+    prefix_args: Vec<String>,
+}
+
+fn opencode_invocation() -> OpenCodeInvocation {
     if cfg!(windows) {
-        "opencode.cmd"
+        if let Some(script) = find_opencode_node_script() {
+            return OpenCodeInvocation {
+                command: "node.exe".to_string(),
+                prefix_args: vec![script.to_string_lossy().to_string()],
+            };
+        }
+        OpenCodeInvocation {
+            command: "opencode.cmd".to_string(),
+            prefix_args: Vec::new(),
+        }
     } else {
-        "opencode"
+        OpenCodeInvocation {
+            command: "opencode".to_string(),
+            prefix_args: Vec::new(),
+        }
     }
+}
+
+fn find_opencode_node_script() -> Option<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(path) = env::var_os("PATH") {
+        roots.extend(env::split_paths(&path));
+    }
+    if let Some(appdata) = env::var_os("APPDATA") {
+        roots.push(PathBuf::from(appdata).join("npm"));
+    }
+
+    roots
+        .into_iter()
+        .map(|root| {
+            root.join("node_modules")
+                .join("opencode-ai")
+                .join("bin")
+                .join("opencode")
+        })
+        .find(|candidate| candidate.is_file())
 }
 
 fn extract_opencode_content(stdout: &str) -> Option<String> {

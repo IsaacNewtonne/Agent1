@@ -6,6 +6,7 @@ target/
 node_modules/
 dist/
 tmp-test-dir/
+.tmp/
 target-*/
 *.exe
 *.msi

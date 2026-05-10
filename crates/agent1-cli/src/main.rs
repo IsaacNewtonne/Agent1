@@ -19,6 +19,9 @@ use agent1_runtime::{
 };
 use agent1_tools::ToolRegistry;
 use agent1_whatsapp::WhatsAppService;
+use agent1_collab::{CollaborationEngine, ProjectSummary};
+use agent1_gateway::{ExternalGateway, GatewayMessage};
+use agent1_core::{CollaborationMode, ExternalPermissions, AuthorType};
 use async_trait::async_trait;
 use axum::{
     Json, Router,
@@ -647,6 +650,8 @@ struct HttpState {
     api_token: Option<String>,
     approval_broker: Arc<ApprovalBroker>,
     whatsapp: Arc<WhatsAppService>,
+    collab_engine: Arc<CollaborationEngine>,
+    gateway: Arc<ExternalGateway>,
 }
 
 #[derive(Default)]
@@ -765,7 +770,7 @@ fn apply_common_headers(response: &mut Response<Body>) {
     );
     response.headers_mut().insert(
         header::ACCESS_CONTROL_ALLOW_METHODS,
-        HeaderValue::from_static("GET,POST,OPTIONS"),
+        HeaderValue::from_static("GET,POST,PATCH,DELETE,OPTIONS"),
     );
 }
 
@@ -813,7 +818,20 @@ async fn run_server(bind: String, db: PathBuf, api_token: Option<String>) -> any
         ));
     }
     let store = SqliteStore::connect(db).await?;
+    reconcile_interrupted_sessions(&store).await?;
     let approval_broker = Arc::new(ApprovalBroker::default());
+    let collab_engine = Arc::new(CollaborationEngine::new(store.clone()));
+    let gateway = Arc::new(ExternalGateway::new(collab_engine.clone()));
+
+    // Start gateway cleanup task
+    let gw_clone = gateway.clone();
+    tokio::spawn(async move {
+        loop {
+            sleep(Duration::from_secs(30)).await;
+            gw_clone.cleanup_stale_connections().await;
+        }
+    });
+
     if let Err(err) = bootstrap_whatsapp_sidecar() {
         eprintln!("WhatsApp sidecar bootstrap skipped: {err}");
     }
@@ -826,6 +844,7 @@ async fn run_server(bind: String, db: PathBuf, api_token: Option<String>) -> any
         .route("/app", get(static_index))
         .route("/app/", get(static_index))
         .route("/api/agents", get(api_agents).post(api_agents_create))
+        .route("/api/agents/{agent_id}", delete(api_agents_delete))
         .route("/api/sessions", get(api_sessions).post(api_sessions_create))
         .route("/api/events", get(api_events))
         .route("/api/approvals", get(api_approvals))
@@ -868,6 +887,17 @@ async fn run_server(bind: String, db: PathBuf, api_token: Option<String>) -> any
         .route("/api/whatsapp/qr", get(api_whatsapp_qr))
         .route("/api/whatsapp/send", post(api_whatsapp_send))
         .route("/{*path}", axum::routing::options(api_options))
+        // --- Collaboration Workspace Routes ---
+        .route("/api/projects", get(api_projects_list).post(api_projects_create))
+        .route("/api/projects/{id}", get(api_projects_get).patch(api_projects_update).delete(api_projects_delete))
+        .route("/api/projects/{id}/agents", post(api_projects_add_agent))
+        .route("/api/projects/{id}/agents/{agent_id}", delete(api_projects_remove_agent))
+        .route("/api/projects/{id}/invite", post(api_projects_invite))
+        .route("/api/projects/{id}/externals", get(api_projects_externals))
+        .route("/api/projects/{id}/externals/{ext_id}", delete(api_projects_externals_remove))
+        .route("/api/projects/{id}/blackboard", get(api_projects_blackboard).post(api_projects_blackboard_write))
+        .route("/api/projects/{id}/tasks", get(api_projects_tasks).post(api_projects_tasks_submit))
+        .route("/gateway/connect", get(ws_gateway_connect))
         .fallback(api_not_found)
         .layer(DefaultBodyLimit::max(256 * 1024))
         .layer(cors_layer())
@@ -876,6 +906,8 @@ async fn run_server(bind: String, db: PathBuf, api_token: Option<String>) -> any
             api_token,
             approval_broker,
             whatsapp: whatsapp_service,
+            collab_engine,
+            gateway,
         });
 
     let server = axum::serve(listener, app);
@@ -1060,6 +1092,19 @@ async fn api_agents_create(
     state.store.save_agent(&agent).await?;
     state.store.save_agent_card(&card_for_agent(&agent)).await?;
     Ok(json_ok(json!({"agent": agent})))
+}
+
+async fn api_agents_delete(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(agent_id): Path<String>,
+) -> Result<Response<Body>, ApiError> {
+    require_auth(&headers, &state)?;
+    if agent_id.eq_ignore_ascii_case("agent1") {
+        return Err(ApiError::bad_request("Agent1 cannot be deleted"));
+    }
+    state.store.delete_agent(&agent_id).await?;
+    Ok(json_ok(json!({"deleted": agent_id})))
 }
 
 async fn api_sessions(
@@ -1635,6 +1680,31 @@ async fn cancel_session_http(session_id: &str, store: &SqliteStore) -> anyhow::R
     Ok(json!({"session_id": session_id, "status": "cancelled"}))
 }
 
+async fn reconcile_interrupted_sessions(store: &SqliteStore) -> anyhow::Result<()> {
+    let sessions = store.recent_sessions(1000).await?;
+    for session in sessions
+        .into_iter()
+        .filter(|session| session.status == SessionStatus::Running)
+    {
+        store
+            .update_session_status(&session.id, SessionStatus::Failed)
+            .await?;
+        store
+            .save_event(&RuntimeEvent {
+                id: new_id("evt"),
+                session_id: Some(session.id.clone()),
+                agent_id: Some(session.root_agent_id.clone()),
+                event_type: EventType::Error,
+                payload: json!({
+                    "message": "session was interrupted before the API server restarted"
+                }),
+                created_at: now(),
+            })
+            .await?;
+    }
+    Ok(())
+}
+
 async fn run_agent_task_http(
     agent_id: &str,
     mut body: Value,
@@ -1846,6 +1916,192 @@ fn fence_if_needed(content: &str) -> String {
     } else {
         content.to_string()
     }
+}
+
+// --- Collaboration Engine API Routes ---
+
+async fn api_projects_list(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Response<Body>, ApiError> {
+    require_auth(&headers, &state)?;
+    let projects = state.store.list_projects().await?;
+    Ok(json_ok(json!({"projects": projects})))
+}
+
+async fn api_projects_create(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<Response<Body>, ApiError> {
+    require_auth(&headers, &state)?;
+    let name = body.get("name").and_then(Value::as_str).ok_or_else(|| ApiError::bad_request("missing project name"))?;
+    let mode_str = body.get("collaboration_mode").and_then(Value::as_str).unwrap_or("automatic");
+    let mode = match mode_str {
+        "automatic" => CollaborationMode::Automatic,
+        "structured" => CollaborationMode::Structured,
+        "fast" => CollaborationMode::Fast,
+        "careful" => CollaborationMode::Careful,
+        _ => CollaborationMode::Automatic,
+    };
+
+    let project = state.collab_engine.create_project(name.to_string(), mode).await.map_err(|e| ApiError::internal(e.to_string()))?;
+    Ok(json_ok(json!(project)))
+}
+
+async fn api_projects_get(
+    Path(id): Path<String>,
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Response<Body>, ApiError> {
+    require_auth(&headers, &state)?;
+    let project = state.store.get_project(&id).await?;
+    Ok(json_ok(json!(project)))
+}
+
+async fn api_projects_update(
+    Path(id): Path<String>,
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<Response<Body>, ApiError> {
+    require_auth(&headers, &state)?;
+    if let Some(mode_str) = body.get("collaboration_mode").and_then(Value::as_str) {
+        let mode = match mode_str {
+            "automatic" => CollaborationMode::Automatic,
+            "structured" => CollaborationMode::Structured,
+            "fast" => CollaborationMode::Fast,
+            "careful" => CollaborationMode::Careful,
+            _ => CollaborationMode::Automatic,
+        };
+        state.collab_engine.update_project_mode(&id, mode).await.map_err(|e| ApiError::internal(e.to_string()))?;
+    }
+    Ok(json_ok(json!({"ok": true})))
+}
+
+async fn api_projects_delete(
+    Path(id): Path<String>,
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Response<Body>, ApiError> {
+    require_auth(&headers, &state)?;
+    state.store.delete_project(&id).await?;
+    Ok(json_ok(json!({"ok": true})))
+}
+
+async fn api_projects_add_agent(
+    Path(_id): Path<String>,
+    State(_state): State<HttpState>,
+    headers: HeaderMap,
+    Json(_body): Json<Value>,
+) -> Result<Response<Body>, ApiError> {
+    Err(ApiError::internal("Not implemented"))
+}
+
+async fn api_projects_remove_agent(
+    Path((_id, _agent_id)): Path<(String, String)>,
+    State(_state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Response<Body>, ApiError> {
+    Err(ApiError::internal("Not implemented"))
+}
+
+async fn api_projects_invite(
+    Path(id): Path<String>,
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<Response<Body>, ApiError> {
+    require_auth(&headers, &state)?;
+    let created_by = body.get("created_by").and_then(Value::as_str).unwrap_or("user");
+    let permissions = ExternalPermissions {
+        can_read_blackboard: true,
+        can_write_blackboard: true,
+        can_create_artifacts: true,
+        allowed_tools: vec![],
+        can_delegate_tasks: false,
+        max_concurrent_tasks: 2,
+    };
+    let token = state.gateway.generate_invite(&id, permissions, created_by.to_string()).await.map_err(|e| ApiError::internal(e.to_string()))?;
+    Ok(json_ok(json!({"token": token.token, "project_id": id})))
+}
+
+async fn api_projects_externals(
+    Path(id): Path<String>,
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Response<Body>, ApiError> {
+    require_auth(&headers, &state)?;
+    let externals = state.store.list_external_agents(&id).await?;
+    Ok(json_ok(json!({"externals": externals})))
+}
+
+async fn api_projects_externals_remove(
+    Path((_id, ext_id)): Path<(String, String)>,
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Response<Body>, ApiError> {
+    require_auth(&headers, &state)?;
+    state.store.delete_external_agent(&ext_id).await?;
+    Ok(json_ok(json!({"ok": true})))
+}
+
+async fn api_projects_blackboard(
+    Path(id): Path<String>,
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Response<Body>, ApiError> {
+    require_auth(&headers, &state)?;
+    let entries = state.store.get_blackboard(&id).await?;
+    Ok(json_ok(json!({"entries": entries})))
+}
+
+async fn api_projects_blackboard_write(
+    Path(_id): Path<String>,
+    State(_state): State<HttpState>,
+    headers: HeaderMap,
+    Json(_body): Json<Value>,
+) -> Result<Response<Body>, ApiError> {
+    Err(ApiError::internal("Not implemented"))
+}
+
+async fn api_projects_tasks(
+    Path(id): Path<String>,
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Response<Body>, ApiError> {
+    require_auth(&headers, &state)?;
+    let tasks = state.store.list_collab_tasks(&id).await?;
+    Ok(json_ok(json!({"tasks": tasks})))
+}
+
+async fn api_projects_tasks_submit(
+    Path(id): Path<String>,
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<Response<Body>, ApiError> {
+    require_auth(&headers, &state)?;
+    let description = body.get("description").and_then(Value::as_str).ok_or_else(|| ApiError::bad_request("missing description"))?;
+
+    let task = state.collab_engine.submit_task(&id, description.to_string()).await.map_err(|e| ApiError::internal(e.to_string()))?;
+    Ok(json_ok(json!({"task": task})))
+}
+
+async fn ws_gateway_connect(
+    ws: WebSocketUpgrade,
+    State(state): State<HttpState>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Result<impl IntoResponse, ApiError> {
+    let token = params.get("token").ok_or_else(|| ApiError::unauthorized("missing invite token"))?.clone();
+    let gateway = state.gateway.clone();
+    Ok(ws.on_upgrade(move |socket| async move {
+        // Simple websocket loop for now
+        let mut socket = socket;
+        while let Some(msg) = socket.recv().await {
+             if msg.is_err() { break; }
+        }
+    }))
 }
 
 #[cfg(test)]

@@ -765,6 +765,314 @@ pub enum EscalationStatus {
     Declined,
 }
 
+// ─── Hybrid Collaboration Workspace Types ───
+
+pub type ProjectId = String;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Project {
+    pub id: ProjectId,
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    pub collaboration_mode: CollaborationMode,
+    #[serde(default)]
+    pub local_agent_ids: Vec<AgentId>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl Project {
+    pub fn new(name: String, mode: CollaborationMode) -> Self {
+        let now = now();
+        Self {
+            id: new_id("proj"),
+            name,
+            description: None,
+            collaboration_mode: mode,
+            local_agent_ids: Vec::new(),
+            created_at: now,
+            updated_at: now,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CollaborationMode {
+    Automatic,
+    Structured,
+    Fast,
+    Careful,
+}
+
+impl Default for CollaborationMode {
+    fn default() -> Self {
+        Self::Automatic
+    }
+}
+
+impl CollaborationMode {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Automatic => "Automatic",
+            Self::Structured => "Structured",
+            Self::Fast => "Fast",
+            Self::Careful => "Careful",
+        }
+    }
+
+    pub fn description(&self) -> &'static str {
+        match self {
+            Self::Automatic => "Agent1 decides behavior based on context",
+            Self::Structured => "Explicit plan → delegate → review cycle",
+            Self::Fast => "Minimal oversight, parallel execution",
+            Self::Careful => "Every action needs approval",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthorType {
+    Local,
+    External,
+    System,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlackboardEntry {
+    pub id: String,
+    pub project_id: ProjectId,
+    pub key: String,
+    pub value: Value,
+    pub author_agent_id: String,
+    pub author_type: AuthorType,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl BlackboardEntry {
+    pub fn new(project_id: ProjectId, key: String, value: Value, author_id: String, author_type: AuthorType) -> Self {
+        let now = now();
+        Self {
+            id: new_id("bb"),
+            project_id,
+            key,
+            value,
+            author_agent_id: author_id,
+            author_type,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExternalPermissions {
+    #[serde(default = "default_true")]
+    pub can_read_blackboard: bool,
+    #[serde(default)]
+    pub can_write_blackboard: bool,
+    #[serde(default)]
+    pub can_create_artifacts: bool,
+    #[serde(default)]
+    pub allowed_tools: Vec<String>,
+    #[serde(default)]
+    pub can_delegate_tasks: bool,
+    #[serde(default = "default_max_tasks")]
+    pub max_concurrent_tasks: u32,
+}
+
+fn default_true() -> bool { true }
+fn default_max_tasks() -> u32 { 2 }
+
+impl Default for ExternalPermissions {
+    fn default() -> Self {
+        Self {
+            can_read_blackboard: true,
+            can_write_blackboard: false,
+            can_create_artifacts: false,
+            allowed_tools: Vec::new(),
+            can_delegate_tasks: false,
+            max_concurrent_tasks: 2,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalAgentStatus {
+    Invited,
+    Connected,
+    Disconnected,
+    Revoked,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExternalAgent {
+    pub id: String,
+    pub project_id: ProjectId,
+    pub name: String,
+    #[serde(default)]
+    pub endpoint: Option<String>,
+    pub invite_token: String,
+    pub capabilities: Vec<String>,
+    pub permissions: ExternalPermissions,
+    pub status: ExternalAgentStatus,
+    #[serde(default)]
+    pub last_heartbeat: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
+impl ExternalAgent {
+    pub fn new(project_id: ProjectId, name: String, token: String, permissions: ExternalPermissions) -> Self {
+        Self {
+            id: new_id("ext"),
+            project_id,
+            name,
+            endpoint: None,
+            invite_token: token,
+            capabilities: Vec::new(),
+            permissions,
+            status: ExternalAgentStatus::Invited,
+            last_heartbeat: None,
+            created_at: now(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InviteToken {
+    pub token: String,
+    pub project_id: ProjectId,
+    pub project_name: String,
+    pub permissions: ExternalPermissions,
+    pub created_by: String,
+    #[serde(default)]
+    pub gateway_url: Option<String>,
+    #[serde(default)]
+    pub expires_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub used_by: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+impl InviteToken {
+    pub fn generate(project: &Project, permissions: ExternalPermissions, created_by: String) -> Self {
+        let token = format!("inv_{}", Uuid::now_v7().simple());
+        Self {
+            token,
+            project_id: project.id.clone(),
+            project_name: project.name.clone(),
+            permissions,
+            created_by,
+            gateway_url: None,
+            expires_at: None,
+            used_by: None,
+            created_at: now(),
+        }
+    }
+
+    /// Export as a shareable JSON string
+    pub fn to_invite_json(&self) -> String {
+        serde_json::to_string_pretty(self).unwrap_or_default()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CollabTaskStatus {
+    Queued,
+    Assigned,
+    InProgress,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CollabTask {
+    pub id: String,
+    pub project_id: ProjectId,
+    pub description: String,
+    pub assigned_agent_id: Option<String>,
+    pub assigned_agent_type: Option<AuthorType>,
+    pub status: CollabTaskStatus,
+    #[serde(default)]
+    pub output: Option<String>,
+    #[serde(default)]
+    pub requires_approval: bool,
+    pub created_at: DateTime<Utc>,
+    #[serde(default)]
+    pub completed_at: Option<DateTime<Utc>>,
+}
+
+impl CollabTask {
+    pub fn new(project_id: ProjectId, description: String) -> Self {
+        Self {
+            id: new_id("ctask"),
+            project_id,
+            description,
+            assigned_agent_id: None,
+            assigned_agent_type: None,
+            status: CollabTaskStatus::Queued,
+            output: None,
+            requires_approval: false,
+            created_at: now(),
+            completed_at: None,
+        }
+    }
+}
+
+/// Describes the behavior the collaboration engine should adopt
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CollabBehavior {
+    /// Agent1 executes directly, no delegation
+    DirectExecution,
+    /// Create plan, delegate steps, review results
+    PlanThenDelegate,
+    /// Delegate to multiple agents in parallel
+    DelegatedParallel,
+    /// Coordinate local + external agents in parallel
+    CoordinatedParallel,
+    /// Every action goes through approval
+    SupervisedApproval,
+}
+
+/// Events broadcast through the collaboration event bus
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CollabEvent {
+    pub id: String,
+    pub project_id: ProjectId,
+    pub event_type: CollabEventType,
+    pub agent_id: Option<String>,
+    pub payload: Value,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CollabEventType {
+    ProjectCreated,
+    ProjectUpdated,
+    AgentJoined,
+    AgentLeft,
+    BlackboardUpdated,
+    TaskCreated,
+    TaskAssigned,
+    TaskCompleted,
+    TaskFailed,
+    ExternalConnected,
+    ExternalDisconnected,
+    ExternalHeartbeat,
+    ContributionReceived,
+    ArtifactCreated,
+    ModeChanged,
+    BehaviorDecided,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

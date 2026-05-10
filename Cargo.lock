@@ -6,8 +6,10 @@ version = 4
 name = "agent1-cli"
 version = "0.2.0"
 dependencies = [
+ "agent1-collab",
  "agent1-core",
  "agent1-db",
+ "agent1-gateway",
  "agent1-models",
  "agent1-runtime",
  "agent1-tools",
@@ -26,6 +28,20 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "agent1-collab"
+version = "0.1.0"
+dependencies = [
+ "agent1-core",
+ "agent1-db",
+ "chrono",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -49,6 +65,20 @@ dependencies = [
  "serde_json",
  "sqlx",
  "tokio",
+]
+
+[[package]]
+name = "agent1-gateway"
+version = "0.1.0"
+dependencies = [
+ "agent1-collab",
+ "agent1-core",
+ "chrono",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

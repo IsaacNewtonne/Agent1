@@ -4,12 +4,16 @@ use agent1_core::{
     Agent, Agent1Error, AgentCard, ApprovalRecord, EventType, McpServerConfig, MemoryItem, Message,
     MessageRole, Result, RuntimeEvent, Session, SessionStatus, ToolCallRecord, ToolCallStatus, now,
     redact_secrets_text, redact_secrets_value,
+    BlackboardEntry, CollabEvent, CollabTask, CollabTaskStatus, CollaborationMode,
+    ExternalAgent, ExternalAgentStatus, ExternalPermissions, InviteToken, Project,
+    AuthorType,
 };
 use chrono::{DateTime, Utc};
 use sqlx::{Executor, Row, SqlitePool, sqlite::SqliteConnectOptions};
 
 const INITIAL_SCHEMA: &str = include_str!("../migrations/0001_initial.sql");
 const ORCHESTRATOR_SCHEMA: &str = include_str!("../migrations/0002_orchestrator.sql");
+const COLLABORATION_SCHEMA: &str = include_str!("../migrations/0003_collaboration.sql");
 
 #[derive(Clone)]
 pub struct SqliteStore {
@@ -48,6 +52,10 @@ impl SqliteStore {
             .execute(ORCHESTRATOR_SCHEMA)
             .await
             .map_err(|err| Agent1Error::Runtime(format!("failed to run orchestrator migration: {err}")))?;
+        self.pool
+            .execute(COLLABORATION_SCHEMA)
+            .await
+            .map_err(|err| Agent1Error::Runtime(format!("failed to run collaboration migration: {err}")))?;
         Ok(())
     }
 
@@ -121,6 +129,33 @@ impl SqliteStore {
         .await
         .map_err(|err| Agent1Error::Runtime(format!("failed to list agents: {err}")))?;
         rows.into_iter().map(agent_from_row).collect()
+    }
+
+    pub async fn delete_agent(&self, agent_id: &str) -> Result<()> {
+        let mut tx = self.pool.begin().await.map_err(|err| {
+            Agent1Error::Runtime(format!("failed to start delete agent transaction: {err}"))
+        })?;
+
+        sqlx::query("DELETE FROM agent_cards WHERE agent_id = ?1")
+            .bind(agent_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|err| Agent1Error::Runtime(format!("failed to delete agent card: {err}")))?;
+
+        let result = sqlx::query("DELETE FROM agents WHERE id = ?1")
+            .bind(agent_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|err| Agent1Error::Runtime(format!("failed to delete agent: {err}")))?;
+
+        if result.rows_affected() == 0 {
+            return Err(Agent1Error::AgentNotFound(agent_id.to_string()));
+        }
+
+        tx.commit().await.map_err(|err| {
+            Agent1Error::Runtime(format!("failed to commit delete agent transaction: {err}"))
+        })?;
+        Ok(())
     }
 
     pub async fn create_session(&self, session: &Session) -> Result<()> {
@@ -716,6 +751,303 @@ impl SqliteStore {
         .map_err(|err| Agent1Error::Runtime(format!("failed to list approvals: {err}")))?;
         rows.into_iter().map(approval_from_row).collect()
     }
+
+    // ─── Collaboration: Projects ───
+
+    pub async fn save_project(&self, project: &Project) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO projects (id, name, description, collab_mode, agent_ids_json, created_at, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                description = excluded.description,
+                collab_mode = excluded.collab_mode,
+                agent_ids_json = excluded.agent_ids_json,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(&project.id)
+        .bind(&project.name)
+        .bind(&project.description)
+        .bind(json_name(&project.collaboration_mode)?)
+        .bind(json_string(&project.local_agent_ids)?)
+        .bind(project.created_at)
+        .bind(project.updated_at)
+        .execute(&self.pool)
+        .await
+        .map_err(|err| Agent1Error::Runtime(format!("failed to save project: {err}")))?;
+        Ok(())
+    }
+
+    pub async fn get_project(&self, project_id: &str) -> Result<Project> {
+        let row = sqlx::query(
+            "SELECT id, name, description, collab_mode, agent_ids_json, created_at, updated_at FROM projects WHERE id = ?1",
+        )
+        .bind(project_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|err| Agent1Error::Runtime(format!("project not found `{project_id}`: {err}")))?;
+        project_from_row(row)
+    }
+
+    pub async fn list_projects(&self) -> Result<Vec<Project>> {
+        let rows = sqlx::query(
+            "SELECT id, name, description, collab_mode, agent_ids_json, created_at, updated_at FROM projects ORDER BY updated_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|err| Agent1Error::Runtime(format!("failed to list projects: {err}")))?;
+        rows.into_iter().map(project_from_row).collect()
+    }
+
+    pub async fn delete_project(&self, project_id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM projects WHERE id = ?1")
+            .bind(project_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|err| Agent1Error::Runtime(format!("failed to delete project: {err}")))?;
+        Ok(())
+    }
+
+    // ─── Collaboration: Blackboard ───
+
+    pub async fn save_blackboard_entry(&self, entry: &BlackboardEntry) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO blackboard (id, project_id, key, value_json, author_agent_id, author_type, created_at, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            ON CONFLICT(project_id, key) DO UPDATE SET
+                value_json = excluded.value_json,
+                author_agent_id = excluded.author_agent_id,
+                author_type = excluded.author_type,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(&entry.id)
+        .bind(&entry.project_id)
+        .bind(&entry.key)
+        .bind(entry.value.to_string())
+        .bind(&entry.author_agent_id)
+        .bind(json_name(&entry.author_type)?)
+        .bind(entry.created_at)
+        .bind(entry.updated_at)
+        .execute(&self.pool)
+        .await
+        .map_err(|err| Agent1Error::Runtime(format!("failed to save blackboard entry: {err}")))?;
+        Ok(())
+    }
+
+    pub async fn get_blackboard(&self, project_id: &str) -> Result<Vec<BlackboardEntry>> {
+        let rows = sqlx::query(
+            "SELECT id, project_id, key, value_json, author_agent_id, author_type, created_at, updated_at FROM blackboard WHERE project_id = ?1 ORDER BY key",
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|err| Agent1Error::Runtime(format!("failed to read blackboard: {err}")))?;
+        rows.into_iter().map(blackboard_from_row).collect()
+    }
+
+    // ─── Collaboration: External Agents ───
+
+    pub async fn save_external_agent(&self, agent: &ExternalAgent) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO external_agents (id, project_id, name, endpoint, invite_token, capabilities_json, permissions_json, status, last_heartbeat, created_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                endpoint = excluded.endpoint,
+                capabilities_json = excluded.capabilities_json,
+                permissions_json = excluded.permissions_json,
+                status = excluded.status,
+                last_heartbeat = excluded.last_heartbeat
+            "#,
+        )
+        .bind(&agent.id)
+        .bind(&agent.project_id)
+        .bind(&agent.name)
+        .bind(&agent.endpoint)
+        .bind(&agent.invite_token)
+        .bind(json_string(&agent.capabilities)?)
+        .bind(json_string(&agent.permissions)?)
+        .bind(json_name(&agent.status)?)
+        .bind(agent.last_heartbeat)
+        .bind(agent.created_at)
+        .execute(&self.pool)
+        .await
+        .map_err(|err| Agent1Error::Runtime(format!("failed to save external agent: {err}")))?;
+        Ok(())
+    }
+
+    pub async fn list_external_agents(&self, project_id: &str) -> Result<Vec<ExternalAgent>> {
+        let rows = sqlx::query(
+            "SELECT id, project_id, name, endpoint, invite_token, capabilities_json, permissions_json, status, last_heartbeat, created_at FROM external_agents WHERE project_id = ?1 ORDER BY created_at DESC",
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|err| Agent1Error::Runtime(format!("failed to list external agents: {err}")))?;
+        rows.into_iter().map(external_agent_from_row).collect()
+    }
+
+    pub async fn update_external_status(&self, external_id: &str, status: ExternalAgentStatus) -> Result<()> {
+        sqlx::query("UPDATE external_agents SET status = ?1 WHERE id = ?2")
+            .bind(json_name(&status)?)
+            .bind(external_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|err| Agent1Error::Runtime(format!("failed to update external status: {err}")))?;
+        Ok(())
+    }
+
+    pub async fn update_external_heartbeat(&self, external_id: &str) -> Result<()> {
+        sqlx::query("UPDATE external_agents SET last_heartbeat = ?1, status = 'connected' WHERE id = ?2")
+            .bind(now())
+            .bind(external_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|err| Agent1Error::Runtime(format!("failed to update heartbeat: {err}")))?;
+        Ok(())
+    }
+
+    pub async fn delete_external_agent(&self, external_id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM external_agents WHERE id = ?1")
+            .bind(external_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|err| Agent1Error::Runtime(format!("failed to delete external agent: {err}")))?;
+        Ok(())
+    }
+
+    // ─── Collaboration: Invite Tokens ───
+
+    pub async fn save_invite_token(&self, invite: &InviteToken) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO invite_tokens (token, project_id, project_name, permissions_json, created_by, gateway_url, expires_at, used_by, created_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "#,
+        )
+        .bind(&invite.token)
+        .bind(&invite.project_id)
+        .bind(&invite.project_name)
+        .bind(json_string(&invite.permissions)?)
+        .bind(&invite.created_by)
+        .bind(&invite.gateway_url)
+        .bind(invite.expires_at)
+        .bind(&invite.used_by)
+        .bind(invite.created_at)
+        .execute(&self.pool)
+        .await
+        .map_err(|err| Agent1Error::Runtime(format!("failed to save invite token: {err}")))?;
+        Ok(())
+    }
+
+    pub async fn get_invite_token(&self, token: &str) -> Result<InviteToken> {
+        let row = sqlx::query(
+            "SELECT token, project_id, project_name, permissions_json, created_by, gateway_url, expires_at, used_by, created_at FROM invite_tokens WHERE token = ?1",
+        )
+        .bind(token)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|err| Agent1Error::Runtime(format!("invite token not found: {err}")))?;
+        invite_from_row(row)
+    }
+
+    pub async fn mark_invite_used(&self, token: &str, used_by: &str) -> Result<()> {
+        sqlx::query("UPDATE invite_tokens SET used_by = ?1 WHERE token = ?2")
+            .bind(used_by)
+            .bind(token)
+            .execute(&self.pool)
+            .await
+            .map_err(|err| Agent1Error::Runtime(format!("failed to mark invite used: {err}")))?;
+        Ok(())
+    }
+
+    // ─── Collaboration: Tasks ───
+
+    pub async fn save_collab_task(&self, task: &CollabTask) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO collab_tasks (id, project_id, description, assigned_agent_id, assigned_agent_type, status, output, requires_approval, created_at, completed_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            ON CONFLICT(id) DO UPDATE SET
+                assigned_agent_id = excluded.assigned_agent_id,
+                assigned_agent_type = excluded.assigned_agent_type,
+                status = excluded.status,
+                output = excluded.output,
+                completed_at = excluded.completed_at
+            "#,
+        )
+        .bind(&task.id)
+        .bind(&task.project_id)
+        .bind(&task.description)
+        .bind(&task.assigned_agent_id)
+        .bind(task.assigned_agent_type.as_ref().map(|t| json_name(t)).transpose()?)
+        .bind(json_name(&task.status)?)
+        .bind(&task.output)
+        .bind(task.requires_approval)
+        .bind(task.created_at)
+        .bind(task.completed_at)
+        .execute(&self.pool)
+        .await
+        .map_err(|err| Agent1Error::Runtime(format!("failed to save collab task: {err}")))?;
+        Ok(())
+    }
+
+    pub async fn get_collab_task(&self, task_id: &str) -> Result<CollabTask> {
+        let row = sqlx::query(
+            "SELECT id, project_id, description, assigned_agent_id, assigned_agent_type, status, output, requires_approval, created_at, completed_at FROM collab_tasks WHERE id = ?1",
+        )
+        .bind(task_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|err| Agent1Error::Runtime(format!("collab task not found: {err}")))?;
+        collab_task_from_row(row)
+    }
+
+    pub async fn list_collab_tasks(&self, project_id: &str) -> Result<Vec<CollabTask>> {
+        let rows = sqlx::query(
+            "SELECT id, project_id, description, assigned_agent_id, assigned_agent_type, status, output, requires_approval, created_at, completed_at FROM collab_tasks WHERE project_id = ?1 ORDER BY created_at DESC",
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|err| Agent1Error::Runtime(format!("failed to list collab tasks: {err}")))?;
+        rows.into_iter().map(collab_task_from_row).collect()
+    }
+
+    // ─── Collaboration: Events ───
+
+    pub async fn save_collab_event(&self, event: &CollabEvent) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO collab_events (id, project_id, event_type, agent_id, payload_json, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )
+        .bind(&event.id)
+        .bind(&event.project_id)
+        .bind(json_name(&event.event_type)?)
+        .bind(&event.agent_id)
+        .bind(event.payload.to_string())
+        .bind(event.created_at)
+        .execute(&self.pool)
+        .await
+        .map_err(|err| Agent1Error::Runtime(format!("failed to save collab event: {err}")))?;
+        Ok(())
+    }
+
+    pub async fn recent_collab_events(&self, project_id: &str, limit: i64) -> Result<Vec<CollabEvent>> {
+        let rows = sqlx::query(
+            "SELECT id, project_id, event_type, agent_id, payload_json, created_at FROM collab_events WHERE project_id = ?1 ORDER BY created_at DESC LIMIT ?2",
+        )
+        .bind(project_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|err| Agent1Error::Runtime(format!("failed to list collab events: {err}")))?;
+        rows.into_iter().map(collab_event_from_row).collect()
+    }
 }
 
 fn agent_from_row(row: sqlx::sqlite::SqliteRow) -> Result<Agent> {
@@ -849,6 +1181,99 @@ fn json_name<T: serde::Serialize>(value: &T) -> Result<String> {
         serde_json::Value::String(text) => Ok(text),
         other => Ok(other.to_string()),
     }
+}
+
+fn project_from_row(row: sqlx::sqlite::SqliteRow) -> Result<Project> {
+    let mode_text: String = row.get("collab_mode");
+    let mode: CollaborationMode = parse_json_string_enum(&mode_text, "collaboration mode")?;
+    let agent_ids_json: String = row.get("agent_ids_json");
+    Ok(Project {
+        id: row.get("id"),
+        name: row.get("name"),
+        description: row.get("description"),
+        collaboration_mode: mode,
+        local_agent_ids: serde_json::from_str(&agent_ids_json).unwrap_or_default(),
+        created_at: row.get::<DateTime<Utc>, _>("created_at"),
+        updated_at: row.get::<DateTime<Utc>, _>("updated_at"),
+    })
+}
+
+fn blackboard_from_row(row: sqlx::sqlite::SqliteRow) -> Result<BlackboardEntry> {
+    let value_json: String = row.get("value_json");
+    let author_type_text: String = row.get("author_type");
+    Ok(BlackboardEntry {
+        id: row.get("id"),
+        project_id: row.get("project_id"),
+        key: row.get("key"),
+        value: serde_json::from_str(&value_json).unwrap_or_default(),
+        author_agent_id: row.get("author_agent_id"),
+        author_type: parse_json_string_enum(&author_type_text, "author type")?,
+        created_at: row.get::<DateTime<Utc>, _>("created_at"),
+        updated_at: row.get::<DateTime<Utc>, _>("updated_at"),
+    })
+}
+
+fn external_agent_from_row(row: sqlx::sqlite::SqliteRow) -> Result<ExternalAgent> {
+    let caps_json: String = row.get("capabilities_json");
+    let perms_json: String = row.get("permissions_json");
+    let status_text: String = row.get("status");
+    Ok(ExternalAgent {
+        id: row.get("id"),
+        project_id: row.get("project_id"),
+        name: row.get("name"),
+        endpoint: row.get("endpoint"),
+        invite_token: row.get("invite_token"),
+        capabilities: serde_json::from_str(&caps_json).unwrap_or_default(),
+        permissions: serde_json::from_str(&perms_json).unwrap_or_default(),
+        status: parse_json_string_enum(&status_text, "external agent status")?,
+        last_heartbeat: row.get("last_heartbeat"),
+        created_at: row.get::<DateTime<Utc>, _>("created_at"),
+    })
+}
+
+fn invite_from_row(row: sqlx::sqlite::SqliteRow) -> Result<InviteToken> {
+    let perms_json: String = row.get("permissions_json");
+    Ok(InviteToken {
+        token: row.get("token"),
+        project_id: row.get("project_id"),
+        project_name: row.get("project_name"),
+        permissions: serde_json::from_str(&perms_json).unwrap_or_default(),
+        created_by: row.get("created_by"),
+        gateway_url: row.get("gateway_url"),
+        expires_at: row.get("expires_at"),
+        used_by: row.get("used_by"),
+        created_at: row.get::<DateTime<Utc>, _>("created_at"),
+    })
+}
+
+fn collab_task_from_row(row: sqlx::sqlite::SqliteRow) -> Result<CollabTask> {
+    let status_text: String = row.get("status");
+    let agent_type_text: Option<String> = row.get("assigned_agent_type");
+    Ok(CollabTask {
+        id: row.get("id"),
+        project_id: row.get("project_id"),
+        description: row.get("description"),
+        assigned_agent_id: row.get("assigned_agent_id"),
+        assigned_agent_type: agent_type_text.as_deref().map(|t| parse_json_string_enum(t, "author type")).transpose()?,
+        status: parse_json_string_enum(&status_text, "collab task status")?,
+        output: row.get("output"),
+        requires_approval: row.get::<bool, _>("requires_approval"),
+        created_at: row.get::<DateTime<Utc>, _>("created_at"),
+        completed_at: row.get("completed_at"),
+    })
+}
+
+fn collab_event_from_row(row: sqlx::sqlite::SqliteRow) -> Result<CollabEvent> {
+    let event_type_text: String = row.get("event_type");
+    let payload_json: String = row.get("payload_json");
+    Ok(CollabEvent {
+        id: row.get("id"),
+        project_id: row.get("project_id"),
+        event_type: parse_json_string_enum(&event_type_text, "collab event type")?,
+        agent_id: row.get("agent_id"),
+        payload: serde_json::from_str(&payload_json).unwrap_or_default(),
+        created_at: row.get::<DateTime<Utc>, _>("created_at"),
+    })
 }
 
 #[cfg(test)]

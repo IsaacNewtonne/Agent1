@@ -177,12 +177,29 @@ impl<A: ApprovalDelegate + Clone> AgentRuntime<A> {
                 json!({"iteration": iteration}),
             )
             .await?;
-            let response = provider
+            let response = match provider
                 .chat_stream(ChatRequest {
                     model: request.agent.model.clone(),
                     messages: conversation.clone(),
                 })
-                .await?;
+                .await
+            {
+                Ok(response) => response,
+                Err(err) => {
+                    let message = err.to_string();
+                    self.store
+                        .update_session_status(&session_id, SessionStatus::Failed)
+                        .await?;
+                    self.emit(
+                        &session_id,
+                        &request.agent.id,
+                        EventType::Error,
+                        json!({"iteration": iteration, "message": message}),
+                    )
+                    .await?;
+                    return Err(err);
+                }
+            };
             if response.chunks.len() > 1 {
                 for (index, chunk) in response.chunks.iter().enumerate() {
                     self.emit(

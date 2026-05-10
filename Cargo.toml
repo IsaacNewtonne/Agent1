@@ -7,6 +7,8 @@ members = [
     "crates/agent1-runtime",
     "crates/agent1-cli",
     "crates/agent1-orchestrator",
+    "crates/agent1-collab",
+    "crates/agent1-gateway",
     "crates/agent1-whatsapp",
 ]
 resolver = "2"
@@ -23,6 +25,8 @@ agent1-models = { path = "crates/agent1-models" }
 agent1-db = { path = "crates/agent1-db" }
 agent1-runtime = { path = "crates/agent1-runtime" }
 agent1-orchestrator = { path = "crates/agent1-orchestrator" }
+agent1-collab = { path = "crates/agent1-collab" }
+agent1-gateway = { path = "crates/agent1-gateway" }
 agent1-whatsapp = { path = "crates/agent1-whatsapp" }
 axum = { version = "0.8.6", features = ["json", "ws"] }
 async-stream = "0.3.6"
