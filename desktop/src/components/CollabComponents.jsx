@@ -102,7 +102,23 @@ export const ProjectHeader = memo(function ProjectHeader({
           {project ? (
             <div className="collab-project-badge">
               <span className="project-glow" aria-hidden="true" />
-              <strong>{project.name}</strong>
+              <label className="project-switcher">
+                <span className="sr-only">Active project</span>
+                <select
+                  value={project.id || ""}
+                  onChange={(e) => {
+                    const nextProject = (projects || []).find((p) => p.id === e.target.value);
+                    if (nextProject) onSelectProject(nextProject);
+                  }}
+                  aria-label="Select project"
+                >
+                  {(projects || []).map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
               <ModeSelector
                 mode={project.collaboration_mode || "automatic"}
                 onChange={onModeChange}
@@ -162,8 +178,15 @@ export const AgentCard = memo(function AgentCard({
     <div
       className={`collab-agent-card ${side} ${isRunning ? "running" : ""} ${isSelected ? "selected" : ""}`}
       onClick={onClick}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onClick();
+        }
+      }}
       role="button"
       tabIndex={0}
+      aria-pressed={isSelected}
     >
       <div className={`collab-agent-avatar ${isRunning ? "running" : ""}`}>
         {initials}
@@ -365,6 +388,15 @@ export const ActivityFeed = memo(function ActivityFeed({ events, pendingApproval
               key={event.id}
               className={`collab-event ${isError ? "error" : ""} ${isExpanded ? "expanded" : ""}`}
               onClick={() => toggleExpand(event.id)}
+              onKeyDown={(keyboardEvent) => {
+                if (keyboardEvent.key === "Enter" || keyboardEvent.key === " ") {
+                  keyboardEvent.preventDefault();
+                  toggleExpand(event.id);
+                }
+              }}
+              role="button"
+              tabIndex={0}
+              aria-expanded={isExpanded}
             >
               <div className="event-header">
                 <span className={`event-type ${isError ? "error" : ""}`}>
@@ -402,7 +434,12 @@ export const StreamOutput = memo(function StreamOutput({ output }) {
   }, [output]);
 
   return (
-    <div ref={ref} className={`collab-stream ${output ? "" : "idle"}`}>
+    <div
+      ref={ref}
+      className={`collab-stream ${output ? "" : "idle"}`}
+      aria-live="polite"
+      aria-atomic="false"
+    >
       {output || "Waiting for agent output..."}
     </div>
   );

@@ -103,6 +103,15 @@ export default function CollabWorkspace() {
   }, [collab.modelProviders]);
   const selectedAgent1Provider =
     providerOptions.find((item) => item.provider === agent1Form.provider) || providerOptions[0];
+  const selectedAgentProvider =
+    providerOptions.find((item) => item.provider === agentForm.provider) || providerOptions[0];
+  const agentModelOptions = useMemo(() => {
+    const options = selectedAgentProvider?.models || [];
+    if (!agentForm.model) return options;
+    if (options.some((model) => modelName(model) === agentForm.model)) return options;
+    return [{ name: agentForm.model }, ...options];
+  }, [agentForm.model, selectedAgentProvider]);
+  const agentModelProviderError = selectedAgentProvider?.error || "";
   const agent1ModelOptions = useMemo(() => {
     const options = selectedAgent1Provider?.models || [];
     if (!agent1Form.model) return options;
@@ -134,6 +143,39 @@ export default function CollabWorkspace() {
       };
     });
   }, [collab.agent1Agent, selectedAgent1Provider]);
+
+  useEffect(() => {
+    if (!selectedAgentProvider?.provider) return;
+    const firstModel = modelName(selectedAgentProvider.models?.[0]);
+    setAgentForm((form) => {
+      if (!form.provider) {
+        return {
+          ...form,
+          provider: selectedAgentProvider.provider,
+          model: form.model || firstModel,
+        };
+      }
+      if (form.provider !== selectedAgentProvider.provider) {
+        return {
+          ...form,
+          model: firstModel,
+        };
+      }
+      return form;
+    });
+  }, [selectedAgentProvider]);
+
+  useEffect(() => {
+    const onKeyDown = (event) => {
+      if (event.key !== "Escape") return;
+      setAgentBuilderOpen(false);
+      setExternalBuilderOpen(false);
+      setAgent1ConfigOpen(false);
+      setDeleteCandidate(null);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   const handleSaveAgent1 = async (e) => {
     e.preventDefault();
@@ -461,21 +503,45 @@ export default function CollabWorkspace() {
               </label>
               <label>
                 <span>Provider</span>
-                <input
-                  type="text"
+                <select
                   value={agentForm.provider}
-                  onChange={(e) => setAgentForm((f) => ({ ...f, provider: e.target.value }))}
-                  placeholder="opencode"
-                />
+                  onChange={(e) => {
+                    const provider = e.target.value;
+                    const nextProvider = providerOptions.find((item) => item.provider === provider);
+                    setAgentForm((f) => ({
+                      ...f,
+                      provider,
+                      model: modelName(nextProvider?.models?.[0]) || f.model,
+                    }));
+                  }}
+                >
+                  {providerOptions.map((provider) => (
+                    <option key={provider.provider} value={provider.provider}>
+                      {provider.label}
+                    </option>
+                  ))}
+                </select>
               </label>
               <label>
                 <span>Model</span>
-                <input
-                  type="text"
+                <select
                   value={agentForm.model}
                   onChange={(e) => setAgentForm((f) => ({ ...f, model: e.target.value }))}
-                  placeholder="gpt-4o"
-                />
+                  disabled={!agentModelOptions.length}
+                >
+                  {!agentModelOptions.length && <option value="">No models loaded</option>}
+                  {agentModelOptions.map((model) => {
+                    const name = modelName(model);
+                    return (
+                      <option key={`${selectedAgentProvider?.provider}-${name}`} value={name}>
+                        {name}
+                      </option>
+                    );
+                  })}
+                </select>
+                {agentModelProviderError && (
+                  <span className="field-hint error">{agentModelProviderError}</span>
+                )}
               </label>
             </div>
             <label>

@@ -22,6 +22,9 @@ export default function useCollaboration(apiBase) {
   const [loading, setLoading] = useState(true);
   const wsRef = useRef(null);
   const modelRefreshRef = useRef(false);
+  const refreshInFlightRef = useRef(false);
+  const pendingRefreshRef = useRef(false);
+  const lastRefreshAtRef = useRef(0);
 
   const fetchJson = useCallback(async (path, options = {}) => {
     const response = await fetch(`${apiBase}${path}`, options);
@@ -46,6 +49,11 @@ export default function useCollaboration(apiBase) {
   // ─── Refresh loop ───
 
   const refreshAll = useCallback(async () => {
+    if (refreshInFlightRef.current) {
+      pendingRefreshRef.current = true;
+      return;
+    }
+    refreshInFlightRef.current = true;
     try {
       const [agentsRes, sessionsRes, eventsRes, mcpRes, approvalsRes] = await Promise.all([
         fetchJson("/api/agents"),
@@ -117,14 +125,27 @@ export default function useCollaboration(apiBase) {
     } catch (error) {
       console.error("Refresh failed:", error);
       setLoading(false);
+    } finally {
+      lastRefreshAtRef.current = Date.now();
+      refreshInFlightRef.current = false;
+      if (pendingRefreshRef.current) {
+        pendingRefreshRef.current = false;
+        setTimeout(() => {
+          refreshAll();
+        }, 120);
+      }
     }
   }, [fetchJson]);
 
   useEffect(() => {
     refreshAll();
-    const timer = setInterval(refreshAll, 2500);
+    const timer = setInterval(() => {
+      if (wsState !== "connected") {
+        refreshAll();
+      }
+    }, 15000);
     return () => clearInterval(timer);
-  }, [refreshAll]);
+  }, [refreshAll, wsState]);
 
   // ─── WebSocket ───
 
@@ -142,9 +163,14 @@ export default function useCollaboration(apiBase) {
         if (data.event_type) {
           setRecentEvents((prev) => [data, ...prev].slice(0, 30));
         }
-        // Auto-refresh on important events
+        // Auto-refresh on important events with throttling to prevent refresh storms.
         if (["SessionStarted", "FinalAnswer", "ToolCallCompleted", "Error"].includes(data.event_type)) {
-          refreshAll();
+          const now = Date.now();
+          if (now - lastRefreshAtRef.current > 700) {
+            refreshAll();
+          } else {
+            pendingRefreshRef.current = true;
+          }
         }
       } catch { /* ignore malformed */ }
     });
