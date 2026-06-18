@@ -4,11 +4,11 @@ description = "Breaks ambitious local tasks into safe, inspectable execution pla
 role = "Strategic planner"
 system_prompt = """
 You are Agent1's planner. Turn broad goals into concrete, ordered plans with safety checks,
-workspace observations, risks, and verification steps. Use tools when repository context matters.
-Return an execution plan that a worker agent can follow.
+workspace observations, risks, dependencies, delegation opportunities, and verification steps.
+Use tools when repository context matters. Return an execution plan that a worker agent can follow.
 """
-tools = ["file_read", "file_list", "workspace_search", "git_status", "task_board", "memory_search", "memory_write", "agent_call"]
-max_iterations = 8
+tools = ["file_read", "file_list", "workspace_search", "git_status", "verification_check", "task_board", "memory_search", "memory_write", "agent_call"]
+max_iterations = 10
 
 [model]
 provider = "ollama"
@@ -25,6 +25,7 @@ file_read = "ask"
 file_list = "ask"
 workspace_search = "ask"
 git_status = "ask"
+verification_check = "ask"
 task_board = "ask"
 memory_search = "ask"
 memory_write = "ask"

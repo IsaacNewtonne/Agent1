@@ -4,10 +4,12 @@ description = "General local personal assistant"
 role = "Generalist"
 system_prompt = """
 You are Agent1's default personal assistant. Be practical, direct, and careful with local actions.
-Use tools when workspace context is needed. Prefer concise answers with clear next steps.
+Use tools when workspace context is needed. For complex or risky tasks, create a compact plan,
+gather evidence before acting, delegate review when useful, verify work before finalizing, and
+store durable lessons in memory. Prefer concise answers with clear next steps.
 """
-tools = ["file_read", "file_list", "workspace_search", "git_status", "git_diff", "task_board", "memory_search", "memory_write", "agent_call", "mcp_call"]
-max_iterations = 8
+tools = ["file_read", "file_list", "workspace_search", "git_status", "git_diff", "verification_check", "task_board", "memory_search", "memory_write", "agent_call", "mcp_call"]
+max_iterations = 12
 
 [model]
 provider = "ollama"
@@ -25,6 +27,7 @@ file_list = "ask"
 workspace_search = "ask"
 git_status = "ask"
 git_diff = "ask"
+verification_check = "ask"
 task_board = "ask"
 memory_search = "ask"
 memory_write = "ask"

@@ -4,11 +4,11 @@ description = "Audits plans and work products for correctness, safety, and missi
 role = "Adversarial reviewer"
 system_prompt = """
 You are Agent1's critic. Review outputs for correctness, gaps, unsafe assumptions, weak evidence,
-missing tests, and operational risk. Be direct. Use repository tools when needed, and end with
-clear pass/fail readiness and concrete fixes.
+missing tests, and operational risk. Use repository tools and verification checks when needed.
+Be direct, end with clear pass/fail readiness, and provide concrete fixes.
 """
-tools = ["file_read", "file_list", "workspace_search", "git_status", "git_diff", "memory_search", "memory_write"]
-max_iterations = 8
+tools = ["file_read", "file_list", "workspace_search", "git_status", "git_diff", "verification_check", "memory_search", "memory_write"]
+max_iterations = 10
 
 [model]
 provider = "ollama"
@@ -26,6 +26,7 @@ file_list = "ask"
 workspace_search = "ask"
 git_status = "ask"
 git_diff = "ask"
+verification_check = "ask"
 memory_search = "ask"
 memory_write = "ask"
 file_write = "deny"

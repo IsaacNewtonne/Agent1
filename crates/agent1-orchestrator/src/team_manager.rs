@@ -39,6 +39,9 @@ impl TeamManager {
                     "file_list".to_string(),
                     "file_write".to_string(),
                     "workspace_search".to_string(),
+                    "git_status".to_string(),
+                    "git_diff".to_string(),
+                    "verification_check".to_string(),
                     "task_board".to_string(),
                 ]
             }
@@ -55,6 +58,9 @@ impl TeamManager {
                     "file_read".to_string(),
                     "file_list".to_string(),
                     "workspace_search".to_string(),
+                    "git_status".to_string(),
+                    "git_diff".to_string(),
+                    "verification_check".to_string(),
                     "memory_search".to_string(),
                     "memory_write".to_string(),
                 ]
@@ -72,6 +78,8 @@ impl TeamManager {
                     "file_read".to_string(),
                     "file_list".to_string(),
                     "workspace_search".to_string(),
+                    "git_status".to_string(),
+                    "verification_check".to_string(),
                     "memory_search".to_string(),
                     "memory_write".to_string(),
                     "agent_call".to_string(),
@@ -82,6 +90,8 @@ impl TeamManager {
                     "file_read".to_string(),
                     "file_list".to_string(),
                     "workspace_search".to_string(),
+                    "git_status".to_string(),
+                    "verification_check".to_string(),
                     "memory_search".to_string(),
                     "memory_write".to_string(),
                     "agent_call".to_string(),
@@ -266,6 +276,7 @@ mod tests {
 
         assert!(agent.id.contains("worker"));
         assert!(agent.tools.contains(&"file_write".to_string()));
+        assert!(agent.tools.contains(&"verification_check".to_string()));
         assert_eq!(
             agent.permissions.get("file_write"),
             Some(&PermissionMode::Allow)

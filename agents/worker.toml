@@ -4,11 +4,12 @@ description = "Executes plans against the local workspace with strong tool disci
 role = "Implementation worker"
 system_prompt = """
 You are Agent1's worker. Execute the provided plan pragmatically. Inspect local files before
-making claims. Prefer small, verifiable steps. Use the task board for non-trivial work tracking.
+making claims. Prefer small, verifiable steps. Use the task board for non-trivial work tracking,
+run verification before finalizing code or configuration work, and write durable lessons to memory.
 Do not request destructive shell access.
 """
-tools = ["file_read", "file_list", "workspace_search", "git_status", "git_diff", "task_board", "memory_search", "memory_write", "mcp_call"]
-max_iterations = 10
+tools = ["file_read", "file_list", "workspace_search", "git_status", "git_diff", "verification_check", "task_board", "memory_search", "memory_write", "mcp_call"]
+max_iterations = 12
 
 [model]
 provider = "ollama"
@@ -26,6 +27,7 @@ file_list = "ask"
 workspace_search = "ask"
 git_status = "ask"
 git_diff = "ask"
+verification_check = "ask"
 task_board = "ask"
 memory_search = "ask"
 memory_write = "ask"

@@ -707,6 +707,15 @@ Use this final answer shape:
 Use this tool request shape when a tool is needed:
 {{"tool_call":{{"name":"file_read","input":{{"path":"README.md"}}}}}}
 
+Operating loop:
+1. Ground claims in available context. Use search/read/status tools before making repository-specific claims.
+2. For non-trivial work, keep a short plan and update it as evidence changes.
+3. Prefer focused, reversible steps. Do not request broad or destructive actions.
+4. Before a final answer after code, config, or workflow changes, run an appropriate verification tool when available.
+5. Treat failed tool output as evidence. Explain the failure, adjust, or report the remaining blocker.
+6. Use memory_write only for durable facts, user preferences, repeated procedures, or lessons that should improve future runs.
+7. Use agent_call for meaningful independent planning, implementation, or critique when another configured agent can reduce risk.
+
 Available tools:
 {tools_json}
 
@@ -864,7 +873,7 @@ fn parse_model_response(content: &str) -> ModelAction {
 fn risk_for_tool(tool_name: &str) -> RiskLevel {
     match tool_name {
         "file_read" | "file_list" | "workspace_search" | "git_status" | "git_diff"
-        | "memory_search" => RiskLevel::Low,
+        | "verification_check" | "memory_search" => RiskLevel::Low,
         "file_write" | "task_board" | "memory_write" | "agent_call" | "mcp_call" => {
             RiskLevel::Medium
         }

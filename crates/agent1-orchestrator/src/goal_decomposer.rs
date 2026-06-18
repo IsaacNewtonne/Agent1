@@ -120,7 +120,8 @@ Rules:
 7. Use "builder" for creating artifacts (code, docs)
 8. Use "critic" only for review/validation steps
 9. Use "reporter" only for final summary/reporting
-10. Keep descriptions concise but actionable
+10. Include an explicit validation or verification step for code, configuration, or workflow changes
+11. Keep descriptions concise but actionable
 
 Return ONLY valid JSON, no markdown or explanation."#,
             goal

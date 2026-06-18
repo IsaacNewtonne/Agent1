@@ -44,6 +44,7 @@ impl ToolRegistry {
         registry.insert(GitDiffTool);
         registry.insert(WorkspaceSearchTool);
         registry.insert(TaskBoardTool);
+        registry.insert(VerificationCheckTool);
         registry.insert(ShellTool);
         registry
     }
@@ -622,6 +623,143 @@ async fn read_tasks(path: &Path) -> Result<Vec<TaskItem>> {
 }
 
 #[derive(Debug, Deserialize)]
+struct VerificationCheckInput {
+    #[serde(default)]
+    commands: Vec<String>,
+    #[serde(default)]
+    include_diff: bool,
+    #[serde(default)]
+    timeout_seconds: Option<u64>,
+}
+
+pub struct VerificationCheckTool;
+
+#[async_trait]
+impl Tool for VerificationCheckTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "verification_check".to_string(),
+            description:
+                "Run an allowlisted verification bundle in the workspace and summarize git state."
+                    .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "commands": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": [
+                                "cargo check",
+                                "cargo test",
+                                "cargo build",
+                                "npm test",
+                                "npm run check",
+                                "npm run build"
+                            ]
+                        }
+                    },
+                    "include_diff": {"type": "boolean"},
+                    "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 300}
+                }
+            }),
+        }
+    }
+
+    async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolResult> {
+        let input: VerificationCheckInput = serde_json::from_value(input).map_err(|err| {
+            Agent1Error::Config(format!("invalid verification_check input: {err}"))
+        })?;
+        let timeout_seconds = input.timeout_seconds.unwrap_or(120).min(300);
+        let mut reports = Vec::new();
+        reports
+            .push(run_verification_command(&ctx.workspace_root, "git status --short", 10).await?);
+        if input.include_diff {
+            reports
+                .push(run_verification_command(&ctx.workspace_root, "git diff --stat", 10).await?);
+        }
+        for command in input.commands {
+            if !is_allowlisted_verification_command(&command) {
+                return Err(Agent1Error::PermissionDenied(format!(
+                    "`{command}` is not an allowlisted verification command"
+                )));
+            }
+            reports.push(
+                run_verification_command(&ctx.workspace_root, &command, timeout_seconds).await?,
+            );
+        }
+
+        let passed = reports.iter().all(|report| {
+            report
+                .get("exit_code")
+                .and_then(Value::as_i64)
+                .map(|code| code == 0)
+                .unwrap_or(false)
+        });
+        Ok(ToolResult {
+            content: serde_json::to_string_pretty(&reports).unwrap_or_else(|_| "[]".to_string()),
+            metadata: json!({
+                "passed": passed,
+                "checks": reports.len(),
+                "timeout_seconds": timeout_seconds
+            }),
+        })
+    }
+}
+
+fn is_allowlisted_verification_command(command: &str) -> bool {
+    matches!(
+        command,
+        "cargo check"
+            | "cargo test"
+            | "cargo build"
+            | "npm test"
+            | "npm run check"
+            | "npm run build"
+    )
+}
+
+async fn run_verification_command(
+    root: &Path,
+    command: &str,
+    timeout_seconds: u64,
+) -> Result<Value> {
+    let mut process = shell_command(command);
+    process
+        .current_dir(root)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    process.kill_on_drop(true);
+    let child = process
+        .spawn()
+        .map_err(|err| Agent1Error::Runtime(format!("failed to run `{command}`: {err}")))?;
+    let output = time::timeout(
+        Duration::from_secs(timeout_seconds),
+        child.wait_with_output(),
+    )
+    .await
+    .map_err(|_| Agent1Error::Runtime(format!("`{command}` timed out after {timeout_seconds}s")))?
+    .map_err(|err| Agent1Error::Runtime(format!("failed to run `{command}`: {err}")))?;
+    let mut stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let mut stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    truncate_field(&mut stdout, 12_000);
+    truncate_field(&mut stderr, 12_000);
+    Ok(json!({
+        "command": command,
+        "exit_code": output.status.code(),
+        "stdout": stdout,
+        "stderr": stderr
+    }))
+}
+
+fn truncate_field(text: &mut String, max_bytes: usize) {
+    if text.len() > max_bytes {
+        text.truncate(max_bytes);
+        text.push_str("\n[truncated]");
+    }
+}
+
+#[derive(Debug, Deserialize)]
 struct ShellInput {
     command: String,
     #[serde(default)]
@@ -748,6 +886,7 @@ mod tests {
         assert!(registry.get("workspace_search").is_some());
         assert!(registry.get("git_diff").is_some());
         assert!(registry.get("task_board").is_some());
+        assert!(registry.get("verification_check").is_some());
         assert!(registry.get("shell").is_some());
     }
 
@@ -756,6 +895,18 @@ mod tests {
         assert!(validate_shell_command("Remove-Item -Recurse target").is_err());
         assert!(validate_shell_command("git reset --hard").is_err());
         assert!(validate_shell_command("cargo check").is_ok());
+    }
+
+    #[test]
+    fn verification_command_allowlist_is_narrow() {
+        assert!(is_allowlisted_verification_command("cargo check"));
+        assert!(is_allowlisted_verification_command("npm run build"));
+        assert!(!is_allowlisted_verification_command(
+            "cargo test && git reset --hard"
+        ));
+        assert!(!is_allowlisted_verification_command(
+            "powershell Remove-Item file"
+        ));
     }
 
     #[tokio::test]
