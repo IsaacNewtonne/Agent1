@@ -114,6 +114,7 @@ The current app centers on the **Hybrid Collaboration Workspace**: create a proj
 | 🚦 `agent1 server` | Start the local API server. |
 | 💬 `agent1 run --agent agents/assistant.toml --task "hello"` | Run an agent from the CLI. |
 | 👥 `agent1 team --task "..."` | Run planner, worker, and critic agents. |
+| 🔁 `agent1 loop --task "..." --max-runs 5` | Run bounded autonomous plan, execute, review iterations with persistent notes. |
 | 🧠 `agent1 models --provider ollama` | List models for a provider. Use `--provider nvidia` for NVIDIA NIM. |
 | ➕ `agent1 agent create agents/my-agent.toml` | Save an agent definition. |
 | 🧰 `agent1 mcp list` | List MCP servers. |
@@ -121,6 +122,19 @@ The current app centers on the **Hybrid Collaboration Workspace**: create a proj
 | ⚡ `agent1 events` | List recent runtime events. |
 
 ## Model Configuration
+
+### Model Routing
+
+Orchestrated runs route roles independently. By default every role uses Ollama `llama3.1:8b`, but you can override globally or per role:
+
+```powershell
+$env:AGENT1_MODEL_DEFAULT = "llama3.1:8b"
+$env:AGENT1_MODEL_CRITIC = "qwen2.5-coder:14b"
+$env:AGENT1_MODEL_PLANNER_PROVIDER = "openai_compatible"
+$env:AGENT1_MODEL_PLANNER_BASE_URL = "http://localhost:8000/v1"
+```
+
+Supported role suffixes are `PLANNER`, `WORKER`, `CRITIC`, `RESEARCHER`, `BUILDER`, `REPORTER`, and `ORCHESTRATOR`. Each role also supports `_PROVIDER`, `_BASE_URL`, and `_CONTEXT` overrides.
 
 ### OpenCode
 

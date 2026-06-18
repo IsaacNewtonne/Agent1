@@ -1,6 +1,6 @@
 use crate::types::OrchestratorConfig;
 use agent1_core::{
-    Agent, Agent1Error, AgentRole, ExecutionStep, MemoryConfig, ModelConfig, PermissionMode, Result,
+    Agent, Agent1Error, AgentRole, ExecutionStep, MemoryConfig, PermissionMode, Result,
 };
 use agent1_db::SqliteStore;
 use agent1_runtime::{AgentRuntime, ApprovalDelegate, ApprovalRequest, RunAgentRequest};
@@ -12,14 +12,16 @@ use tokio::sync::Mutex;
 
 pub struct TeamManager {
     store: SqliteStore,
+    config: OrchestratorConfig,
     tools: ToolRegistry,
     active_agents: Mutex<HashMap<String, Agent>>,
 }
 
 impl TeamManager {
-    pub fn new(store: SqliteStore, _config: OrchestratorConfig) -> Self {
+    pub fn new(store: SqliteStore, config: OrchestratorConfig) -> Self {
         Self {
             store,
+            config,
             tools: ToolRegistry::with_defaults(),
             active_agents: Mutex::new(HashMap::new()),
         }
@@ -100,7 +102,7 @@ impl TeamManager {
             }
         };
 
-        let model = role_model_config();
+        let model = self.config.model_routing.for_role(role).clone();
 
         let mut permissions = BTreeMap::new();
         for tool in &base_tools {
@@ -215,33 +217,6 @@ impl TeamManager {
         let mut active = self.active_agents.lock().await;
         active.clear();
         Ok(())
-    }
-}
-
-fn role_model_config() -> ModelConfig {
-    #[cfg(test)]
-    {
-        ModelConfig {
-            provider: "mock".to_string(),
-            model: "final".to_string(),
-            base_url: None,
-            context_window: 8192,
-            temperature: 0.2,
-            top_p: None,
-            max_tokens: None,
-        }
-    }
-    #[cfg(not(test))]
-    {
-        ModelConfig {
-            provider: "ollama".to_string(),
-            model: "llama3.1:8b".to_string(),
-            base_url: None,
-            context_window: 8192,
-            temperature: 0.2,
-            top_p: None,
-            max_tokens: None,
-        }
     }
 }
 

@@ -16,6 +16,7 @@ use agent1_core::{AuthorType, CollaborationMode, ExternalPermissions};
 use agent1_db::SqliteStore;
 use agent1_gateway::{ExternalGateway, GatewayMessage};
 use agent1_models::provider_for;
+use agent1_orchestrator::{run_orchestration, ProgressTracker};
 use agent1_runtime::{
     call_mcp_tool, list_mcp_tools, runtime_tool_definition, shutdown_mcp_pool, shutdown_mcp_scope,
     AgentRuntime, ApprovalDelegate, ApprovalRequest, RiskLevel, RunAgentRequest,
@@ -80,6 +81,24 @@ enum Command {
         db: PathBuf,
         #[arg(long)]
         auto_approve: bool,
+    },
+    Loop {
+        #[arg(long)]
+        task: String,
+        #[arg(long, default_value = ".")]
+        workspace: PathBuf,
+        #[arg(long, default_value = ".agent1/agent1.db")]
+        db: PathBuf,
+        #[arg(long)]
+        auto_approve: bool,
+        #[arg(long, default_value_t = 5)]
+        max_runs: usize,
+        #[arg(long, default_value = "AGENT1_LOOP_COMPLETE")]
+        completion_signal: String,
+        #[arg(long, default_value_t = 2)]
+        completion_threshold: usize,
+        #[arg(long)]
+        notes: Option<PathBuf>,
     },
     Models {
         #[arg(long, default_value = "ollama")]
@@ -315,6 +334,28 @@ async fn main() -> anyhow::Result<()> {
             println!("critic session: {}", review.session_id);
             println!();
             println!("CRITIC\n{}", review.final_answer);
+        }
+        Command::Loop {
+            task,
+            workspace,
+            db,
+            auto_approve,
+            max_runs,
+            completion_signal,
+            completion_threshold,
+            notes,
+        } => {
+            run_autonomous_loop(
+                task,
+                workspace,
+                db,
+                auto_approve,
+                max_runs,
+                completion_signal,
+                completion_threshold,
+                notes,
+            )
+            .await?;
         }
         Command::Models { provider, base_url } => {
             let config = ModelConfig {
@@ -584,6 +625,177 @@ async fn run_agent_once(
             session_id: None,
         })
         .await?)
+}
+
+async fn run_autonomous_loop(
+    task: String,
+    workspace: PathBuf,
+    db: PathBuf,
+    auto_approve: bool,
+    max_runs: usize,
+    completion_signal: String,
+    completion_threshold: usize,
+    notes: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    if max_runs == 0 {
+        return Err(anyhow::anyhow!("--max-runs must be greater than zero"));
+    }
+    if completion_threshold == 0 {
+        return Err(anyhow::anyhow!(
+            "--completion-threshold must be greater than zero"
+        ));
+    }
+
+    let notes_path = autonomous_notes_path(&workspace, notes);
+    if let Some(parent) = notes_path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let mut consecutive_complete = 0_usize;
+
+    println!("autonomous loop notes: {}", notes_path.display());
+    println!("completion signal: {completion_signal}");
+    println!("max runs: {max_runs}");
+    println!();
+
+    for iteration in 1..=max_runs {
+        let notes_text = tokio::fs::read_to_string(&notes_path)
+            .await
+            .unwrap_or_else(|_| initial_loop_notes(&task));
+        let objective =
+            build_loop_objective(&task, iteration, max_runs, &completion_signal, &notes_text);
+
+        println!("loop iteration {iteration}/{max_runs}");
+        let response = run_orchestration(
+            &db,
+            &objective,
+            Some(workspace.to_string_lossy().to_string()),
+            auto_approve,
+        )
+        .await?;
+        println!(
+            "orchestration={} plan={} status={}",
+            response.orchestration_id, response.plan_id, response.status
+        );
+
+        let store = SqliteStore::connect(&db).await?;
+        let tracker = ProgressTracker::new(store);
+        let (_plan, steps) = tracker.get_plan_with_steps(&response.plan_id).await?;
+        let iteration_summary = render_loop_iteration_summary(iteration, &response, &steps);
+        append_loop_notes(&notes_path, &iteration_summary).await?;
+
+        let contains_signal = completion_seen(
+            &completion_signal,
+            &[response.message.as_str(), iteration_summary.as_str()],
+        );
+        if contains_signal {
+            consecutive_complete += 1;
+        } else {
+            consecutive_complete = 0;
+        }
+
+        if response.status != "Completed" {
+            println!("stopping: iteration status was {}", response.status);
+            break;
+        }
+        if consecutive_complete >= completion_threshold {
+            println!("stopping: completion signal seen {consecutive_complete} consecutive time(s)");
+            break;
+        }
+        if iteration == max_runs {
+            println!("stopping: max runs reached");
+        }
+    }
+
+    Ok(())
+}
+
+fn autonomous_notes_path(workspace: &std::path::Path, notes: Option<PathBuf>) -> PathBuf {
+    match notes {
+        Some(path) if path.is_absolute() => path,
+        Some(path) => workspace.join(path),
+        None => workspace.join(".agent1").join("autonomous-loop-notes.md"),
+    }
+}
+
+fn initial_loop_notes(task: &str) -> String {
+    format!(
+        "# Agent1 Autonomous Loop Notes\n\n## Objective\n{task}\n\n## Progress\n- No prior loop iterations.\n"
+    )
+}
+
+fn build_loop_objective(
+    task: &str,
+    iteration: usize,
+    max_runs: usize,
+    completion_signal: &str,
+    notes: &str,
+) -> String {
+    format!(
+        r#"Autonomous loop iteration {iteration}/{max_runs}.
+
+Primary objective:
+{task}
+
+Persistent notes from previous iterations:
+{notes}
+
+Continue the objective from the notes. Do the next concrete useful work, verify it, and update durable knowledge through memory when it will help future runs.
+
+If the objective is fully complete and verified, include this exact completion signal in a final worker, critic, or reporter output:
+{completion_signal}
+
+If the objective is not complete, do not include the completion signal. Report remaining work clearly."#
+    )
+}
+
+fn render_loop_iteration_summary(
+    iteration: usize,
+    response: &agent1_orchestrator::OrchestrateResponse,
+    steps: &[agent1_core::ExecutionStep],
+) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "\n## Iteration {iteration}\n- Orchestration: {}\n- Plan: {}\n- Status: {}\n- Message: {}\n\n",
+        response.orchestration_id, response.plan_id, response.status, response.message
+    ));
+    for step in steps {
+        out.push_str(&format!(
+            "### Step {} {:?}\n{}\n\n",
+            step.step_order + 1,
+            step.status,
+            step.description
+        ));
+        if let Some(output) = &step.output {
+            out.push_str("Output:\n");
+            out.push_str(&truncate_notes_output(output, 2_000));
+            out.push_str("\n\n");
+        }
+    }
+    out
+}
+
+fn truncate_notes_output(output: &str, max_chars: usize) -> String {
+    let mut text = output.chars().take(max_chars).collect::<String>();
+    if output.chars().count() > max_chars {
+        text.push_str("\n[truncated]");
+    }
+    text
+}
+
+fn completion_seen(signal: &str, texts: &[&str]) -> bool {
+    !signal.trim().is_empty() && texts.iter().any(|text| text.contains(signal))
+}
+
+async fn append_loop_notes(path: &PathBuf, text: &str) -> anyhow::Result<()> {
+    use tokio::io::AsyncWriteExt;
+
+    let mut file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .await?;
+    file.write_all(text.as_bytes()).await?;
+    Ok(())
 }
 
 fn load_agent(path: PathBuf) -> Result<Agent, Agent1Error> {
@@ -2406,6 +2618,19 @@ system_prompt = "Help."
         let text = valid_agent_toml("shell = \"sometimes\"");
         let result = toml::from_str::<Agent>(&text);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn loop_completion_signal_requires_exact_text() {
+        assert!(completion_seen(
+            "AGENT1_LOOP_COMPLETE",
+            &["done\nAGENT1_LOOP_COMPLETE"]
+        ));
+        assert!(!completion_seen(
+            "AGENT1_LOOP_COMPLETE",
+            &["done without the signal"]
+        ));
+        assert!(!completion_seen("", &["anything"]));
     }
 
     #[test]

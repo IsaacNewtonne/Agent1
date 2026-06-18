@@ -13,6 +13,7 @@ path = "src/main.rs"
 agent1-core.workspace = true
 agent1-db.workspace = true
 agent1-models.workspace = true
+agent1-orchestrator.workspace = true
 agent1-runtime.workspace = true
 agent1-tools.workspace = true
 agent1-whatsapp.workspace = true

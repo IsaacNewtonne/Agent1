@@ -11,6 +11,7 @@ dependencies = [
  "agent1-db",
  "agent1-gateway",
  "agent1-models",
+ "agent1-orchestrator",
  "agent1-runtime",
  "agent1-tools",
  "agent1-whatsapp",

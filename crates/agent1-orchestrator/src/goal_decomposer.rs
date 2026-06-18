@@ -1,22 +1,10 @@
 use crate::types::{ExecutionPlan, ExecutionStep, OrchestratorConfig, PlanView};
 use agent1_core::{
-    now, Agent1Error, AgentRole, ChatMessage, ChatRequest, ModelConfig, PlanId, PlanStatus, Result,
+    now, Agent1Error, AgentRole, ChatMessage, ChatRequest, PlanId, PlanStatus, Result,
 };
 use agent1_models::provider_for;
 use serde::{Deserialize, Deserializer};
 use std::collections::HashSet;
-
-fn planner_model_config() -> ModelConfig {
-    ModelConfig {
-        provider: String::from("ollama"),
-        model: String::from("llama3.1:8b"),
-        base_url: None,
-        context_window: 8192,
-        temperature: 0.2,
-        top_p: None,
-        max_tokens: None,
-    }
-}
 
 #[derive(Debug, Deserialize)]
 struct PlanStep {
@@ -129,10 +117,11 @@ Return ONLY valid JSON, no markdown or explanation."#,
     }
 
     async fn call_planner(&self, prompt: &str) -> Result<String> {
-        let provider = provider_for(&planner_model_config())?;
+        let model = self.config.model_routing.planner.clone();
+        let provider = provider_for(&model)?;
 
         let request = ChatRequest {
-            model: planner_model_config(),
+            model,
             messages: vec![ChatMessage {
                 role: "user".to_string(),
                 content: prompt.to_string(),

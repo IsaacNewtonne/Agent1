@@ -1,7 +1,7 @@
 pub use agent1_core::{
     new_id, now, Agent1Error, AgentId, AgentRole, EscalationId, EscalationRecord, EscalationStatus,
-    EscalationType, ExecutionPlan, ExecutionStep, OrchestrationId, OrchestrationSession,
-    OrchestrationStatus, PlanId, PlanStatus, Result, StepId, StepStatus,
+    EscalationType, ExecutionPlan, ExecutionStep, ModelConfig, OrchestrationId,
+    OrchestrationSession, OrchestrationStatus, PlanId, PlanStatus, Result, StepId, StepStatus,
 };
 use serde::{Deserialize, Serialize};
 
@@ -11,6 +11,7 @@ pub struct OrchestratorConfig {
     pub max_plan_depth: usize,
     pub auto_review: bool,
     pub review_threshold: usize,
+    pub model_routing: ModelRoutingConfig,
 }
 
 impl Default for OrchestratorConfig {
@@ -20,6 +21,90 @@ impl Default for OrchestratorConfig {
             max_plan_depth: 20,
             auto_review: true,
             review_threshold: 2,
+            model_routing: ModelRoutingConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ModelRoutingConfig {
+    pub planner: ModelConfig,
+    pub worker: ModelConfig,
+    pub critic: ModelConfig,
+    pub researcher: ModelConfig,
+    pub builder: ModelConfig,
+    pub reporter: ModelConfig,
+    pub orchestrator: ModelConfig,
+}
+
+impl ModelRoutingConfig {
+    pub fn for_role(&self, role: AgentRole) -> &ModelConfig {
+        match role {
+            AgentRole::Planner => &self.planner,
+            AgentRole::Worker => &self.worker,
+            AgentRole::Critic => &self.critic,
+            AgentRole::Researcher => &self.researcher,
+            AgentRole::Builder => &self.builder,
+            AgentRole::Reporter => &self.reporter,
+            AgentRole::Orchestrator => &self.orchestrator,
+        }
+    }
+}
+
+impl Default for ModelRoutingConfig {
+    fn default() -> Self {
+        Self {
+            planner: routed_model("PLANNER", 0.2),
+            worker: routed_model("WORKER", 0.15),
+            critic: routed_model("CRITIC", 0.1),
+            researcher: routed_model("RESEARCHER", 0.2),
+            builder: routed_model("BUILDER", 0.15),
+            reporter: routed_model("REPORTER", 0.2),
+            orchestrator: routed_model("ORCHESTRATOR", 0.2),
+        }
+    }
+}
+
+fn routed_model(role: &str, temperature: f32) -> ModelConfig {
+    #[cfg(test)]
+    {
+        let _ = (role, temperature);
+        ModelConfig {
+            provider: "mock".to_string(),
+            model: "final".to_string(),
+            base_url: None,
+            context_window: 8192,
+            temperature: 0.2,
+            top_p: None,
+            max_tokens: None,
+        }
+    }
+    #[cfg(not(test))]
+    {
+        let provider = std::env::var(format!("AGENT1_MODEL_{role}_PROVIDER"))
+            .or_else(|_| std::env::var("AGENT1_MODEL_DEFAULT_PROVIDER"))
+            .unwrap_or_else(|_| "ollama".to_string());
+        let model = std::env::var(format!("AGENT1_MODEL_{role}"))
+            .or_else(|_| std::env::var("AGENT1_MODEL_DEFAULT"))
+            .unwrap_or_else(|_| "llama3.1:8b".to_string());
+        let base_url = std::env::var(format!("AGENT1_MODEL_{role}_BASE_URL"))
+            .or_else(|_| std::env::var("AGENT1_MODEL_DEFAULT_BASE_URL"))
+            .ok()
+            .filter(|value| !value.trim().is_empty());
+        let context_window = std::env::var(format!("AGENT1_MODEL_{role}_CONTEXT"))
+            .or_else(|_| std::env::var("AGENT1_MODEL_DEFAULT_CONTEXT"))
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(8192);
+
+        ModelConfig {
+            provider,
+            model,
+            base_url,
+            context_window,
+            temperature,
+            top_p: None,
+            max_tokens: None,
         }
     }
 }
