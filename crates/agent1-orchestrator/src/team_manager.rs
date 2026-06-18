@@ -1,7 +1,6 @@
 use crate::types::OrchestratorConfig;
 use agent1_core::{
-    Agent, AgentRole, ExecutionStep, MemoryConfig,
-    ModelConfig, PermissionMode, Agent1Error, Result,
+    Agent, Agent1Error, AgentRole, ExecutionStep, MemoryConfig, ModelConfig, PermissionMode, Result,
 };
 use agent1_db::SqliteStore;
 use agent1_runtime::{AgentRuntime, ApprovalDelegate, ApprovalRequest, RunAgentRequest};
@@ -14,16 +13,14 @@ use tokio::sync::Mutex;
 pub struct TeamManager {
     store: SqliteStore,
     tools: ToolRegistry,
-    config: OrchestratorConfig,
     active_agents: Mutex<HashMap<String, Agent>>,
 }
 
 impl TeamManager {
-    pub fn new(store: SqliteStore, config: OrchestratorConfig) -> Self {
+    pub fn new(store: SqliteStore, _config: OrchestratorConfig) -> Self {
         Self {
             store,
             tools: ToolRegistry::with_defaults(),
-            config,
             active_agents: Mutex::new(HashMap::new()),
         }
     }
@@ -93,15 +90,7 @@ impl TeamManager {
             }
         };
 
-        let model = ModelConfig {
-            provider: "ollama".to_string(),
-            model: "llama3.1:8b".to_string(),
-            base_url: None,
-            context_window: 8192,
-            temperature: 0.2,
-            top_p: None,
-            max_tokens: None,
-        };
+        let model = role_model_config();
 
         let mut permissions = BTreeMap::new();
         for tool in &base_tools {
@@ -119,7 +108,11 @@ impl TeamManager {
         let agent = Agent {
             id: agent_id.clone(),
             name: format!("{:?} Agent", role),
-            description: Some(format!("{} for orchestration {}", orchestration_id, role.as_str())),
+            description: Some(format!(
+                "{} for orchestration {}",
+                orchestration_id,
+                role.as_str()
+            )),
             role: Some(role.as_str().to_string()),
             system_prompt: role.default_system_prompt().to_string(),
             model,
@@ -135,18 +128,20 @@ impl TeamManager {
         };
 
         self.store.save_agent(&agent).await?;
-        self.store.save_agent_card(&agent1_core::AgentCard {
-            id: agent.id.clone(),
-            name: agent.name.clone(),
-            description: agent.description.clone(),
-            skills: vec![agent1_core::AgentSkill {
-                name: role.as_str().to_string(),
-                description: format!("{:?} role agent", role),
-            }],
-            input_modes: vec!["text".to_string()],
-            output_modes: vec!["text".to_string(), "markdown".to_string()],
-            endpoint: format!("http://127.0.0.1:17371/api/agents/{}/tasks", agent.id),
-        }).await?;
+        self.store
+            .save_agent_card(&agent1_core::AgentCard {
+                id: agent.id.clone(),
+                name: agent.name.clone(),
+                description: agent.description.clone(),
+                skills: vec![agent1_core::AgentSkill {
+                    name: role.as_str().to_string(),
+                    description: format!("{:?} role agent", role),
+                }],
+                input_modes: vec!["text".to_string()],
+                output_modes: vec!["text".to_string(), "markdown".to_string()],
+                endpoint: format!("http://127.0.0.1:17371/api/agents/{}/tasks", agent.id),
+            })
+            .await?;
 
         let mut active = self.active_agents.lock().await;
         active.insert(agent_id, agent.clone());
@@ -193,6 +188,7 @@ impl TeamManager {
                 agent,
                 input: step.description.clone(),
                 workspace_root,
+                session_id: None,
             })
             .await?;
 
@@ -212,6 +208,33 @@ impl TeamManager {
     }
 }
 
+fn role_model_config() -> ModelConfig {
+    #[cfg(test)]
+    {
+        ModelConfig {
+            provider: "mock".to_string(),
+            model: "final".to_string(),
+            base_url: None,
+            context_window: 8192,
+            temperature: 0.2,
+            top_p: None,
+            max_tokens: None,
+        }
+    }
+    #[cfg(not(test))]
+    {
+        ModelConfig {
+            provider: "ollama".to_string(),
+            model: "llama3.1:8b".to_string(),
+            base_url: None,
+            context_window: 8192,
+            temperature: 0.2,
+            top_p: None,
+            max_tokens: None,
+        }
+    }
+}
+
 #[derive(Clone)]
 struct CliApprovals {
     auto_approve: bool,
@@ -227,7 +250,6 @@ impl ApprovalDelegate for CliApprovals {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
     use tempfile::TempDir;
 
     #[tokio::test]
@@ -244,7 +266,10 @@ mod tests {
 
         assert!(agent.id.contains("worker"));
         assert!(agent.tools.contains(&"file_write".to_string()));
-        assert_eq!(agent.permissions.get("file_write"), Some(&PermissionMode::Allow));
+        assert_eq!(
+            agent.permissions.get("file_write"),
+            Some(&PermissionMode::Allow)
+        );
     }
 
     #[tokio::test]

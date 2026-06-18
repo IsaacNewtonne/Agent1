@@ -9,7 +9,7 @@ use std::{
 use agent1_core::{Agent1Error, Result, ToolDefinition, ToolResult};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use tokio::{fs, process::Command, time};
 
 #[derive(Debug, Clone)]
@@ -658,12 +658,19 @@ impl Tool for ShellTool {
             .current_dir(&ctx.workspace_root)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let output = time::timeout(Duration::from_secs(timeout_seconds), command.output())
-            .await
-            .map_err(|_| {
-                Agent1Error::Runtime(format!("shell command timed out after {timeout_seconds}s"))
-            })?
+        command.kill_on_drop(true);
+        let child = command
+            .spawn()
             .map_err(|err| Agent1Error::Runtime(format!("failed to run shell command: {err}")))?;
+        let output = time::timeout(
+            Duration::from_secs(timeout_seconds),
+            child.wait_with_output(),
+        )
+        .await
+        .map_err(|_| {
+            Agent1Error::Runtime(format!("shell command timed out after {timeout_seconds}s"))
+        })?
+        .map_err(|err| Agent1Error::Runtime(format!("failed to run shell command: {err}")))?;
         let mut content = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr);
         if !stderr.trim().is_empty() {
@@ -768,11 +775,9 @@ mod tests {
                 },
             )
             .await;
-        assert!(
-            result
-                .expect_err("timeout expected")
-                .to_string()
-                .contains("timed out")
-        );
+        assert!(result
+            .expect_err("timeout expected")
+            .to_string()
+            .contains("timed out"));
     }
 }

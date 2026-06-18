@@ -14,13 +14,13 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use agent1_core::{
-    AuthorType, BlackboardEntry, CollabBehavior, CollabEvent, CollabEventType, CollabTask,
-    CollabTaskStatus, CollaborationMode, ExternalAgent, ExternalAgentStatus, ExternalPermissions,
-    InviteToken, Project, ProjectId, Result, Agent1Error, new_id, now,
+    new_id, now, Agent1Error, AuthorType, BlackboardEntry, CollabBehavior, CollabEvent,
+    CollabEventType, CollabTask, CollabTaskStatus, CollaborationMode, ExternalAgent,
+    ExternalAgentStatus, ExternalPermissions, InviteToken, Project, Result,
 };
 use agent1_db::SqliteStore;
-use serde_json::{Value, json};
-use tokio::sync::{Mutex, RwLock, broadcast};
+use serde_json::{json, Value};
+use tokio::sync::{broadcast, Mutex, RwLock};
 
 /// The central collaboration engine.
 ///
@@ -71,10 +71,16 @@ impl CollaborationEngine {
     pub async fn create_project(&self, name: String, mode: CollaborationMode) -> Result<Project> {
         let project = Project::new(name, mode);
         self.store.save_project(&project).await?;
-        self.emit_event(&project.id, CollabEventType::ProjectCreated, None, json!({
-            "project_name": project.name,
-            "mode": project.collaboration_mode,
-        })).await;
+        self.emit_event(
+            &project.id,
+            CollabEventType::ProjectCreated,
+            None,
+            json!({
+                "project_name": project.name,
+                "mode": project.collaboration_mode,
+            }),
+        )
+        .await;
         Ok(project)
     }
 
@@ -86,14 +92,24 @@ impl CollaborationEngine {
         self.store.list_projects().await
     }
 
-    pub async fn update_project_mode(&self, project_id: &str, mode: CollaborationMode) -> Result<Project> {
+    pub async fn update_project_mode(
+        &self,
+        project_id: &str,
+        mode: CollaborationMode,
+    ) -> Result<Project> {
         let mut project = self.store.get_project(project_id).await?;
         project.collaboration_mode = mode;
         project.updated_at = now();
         self.store.save_project(&project).await?;
-        self.emit_event(project_id, CollabEventType::ModeChanged, None, json!({
-            "new_mode": mode,
-        })).await;
+        self.emit_event(
+            project_id,
+            CollabEventType::ModeChanged,
+            None,
+            json!({
+                "new_mode": mode,
+            }),
+        )
+        .await;
         Ok(project)
     }
 
@@ -103,21 +119,37 @@ impl CollaborationEngine {
             project.local_agent_ids.push(agent_id.to_string());
             project.updated_at = now();
             self.store.save_project(&project).await?;
-            self.emit_event(project_id, CollabEventType::AgentJoined, Some(agent_id), json!({
-                "agent_type": "local",
-            })).await;
+            self.emit_event(
+                project_id,
+                CollabEventType::AgentJoined,
+                Some(agent_id),
+                json!({
+                    "agent_type": "local",
+                }),
+            )
+            .await;
         }
         Ok(project)
     }
 
-    pub async fn remove_agent_from_project(&self, project_id: &str, agent_id: &str) -> Result<Project> {
+    pub async fn remove_agent_from_project(
+        &self,
+        project_id: &str,
+        agent_id: &str,
+    ) -> Result<Project> {
         let mut project = self.store.get_project(project_id).await?;
         project.local_agent_ids.retain(|id| id != agent_id);
         project.updated_at = now();
         self.store.save_project(&project).await?;
-        self.emit_event(project_id, CollabEventType::AgentLeft, Some(agent_id), json!({
-            "agent_type": "local",
-        })).await;
+        self.emit_event(
+            project_id,
+            CollabEventType::AgentLeft,
+            Some(agent_id),
+            json!({
+                "agent_type": "local",
+            }),
+        )
+        .await;
         Ok(project)
     }
 
@@ -154,13 +186,19 @@ impl CollaborationEngine {
             CollaborationMode::Careful => CollabBehavior::SupervisedApproval,
         };
 
-        self.emit_event(&project.id, CollabEventType::BehaviorDecided, None, json!({
-            "behavior": behavior,
-            "local_agents": local_count,
-            "external_agents": external_count,
-            "active_tasks": active_tasks,
-            "has_risky": has_risky,
-        })).await;
+        self.emit_event(
+            &project.id,
+            CollabEventType::BehaviorDecided,
+            None,
+            json!({
+                "behavior": behavior,
+                "local_agents": local_count,
+                "external_agents": external_count,
+                "active_tasks": active_tasks,
+                "has_risky": has_risky,
+            }),
+        )
+        .await;
 
         behavior
     }
@@ -169,14 +207,17 @@ impl CollaborationEngine {
 
     pub async fn blackboard_read(&self, project_id: &str) -> Vec<BlackboardEntry> {
         let cache = self.blackboard.read().await;
-        cache.get(project_id)
+        cache
+            .get(project_id)
             .map(|entries| entries.values().cloned().collect())
             .unwrap_or_default()
     }
 
     pub async fn blackboard_get(&self, project_id: &str, key: &str) -> Option<BlackboardEntry> {
         let cache = self.blackboard.read().await;
-        cache.get(project_id).and_then(|entries| entries.get(key).cloned())
+        cache
+            .get(project_id)
+            .and_then(|entries| entries.get(key).cloned())
     }
 
     pub async fn blackboard_write(
@@ -193,20 +234,25 @@ impl CollaborationEngine {
             if let Some(ext) = &ext {
                 if !ext.permissions.can_write_blackboard {
                     return Err(Agent1Error::PermissionDenied(
-                        "external agent not allowed to write blackboard".to_string()
+                        "external agent not allowed to write blackboard".to_string(),
                     ));
                 }
             }
         }
 
         let entry = BlackboardEntry::new(
-            project_id.to_string(), key.clone(), value.clone(), author_id.clone(), author_type,
+            project_id.to_string(),
+            key.clone(),
+            value.clone(),
+            author_id.clone(),
+            author_type,
         );
 
         // Update in-memory cache
         {
             let mut cache = self.blackboard.write().await;
-            cache.entry(project_id.to_string())
+            cache
+                .entry(project_id.to_string())
                 .or_default()
                 .insert(key.clone(), entry.clone());
         }
@@ -214,10 +260,16 @@ impl CollaborationEngine {
         // Persist to database
         self.store.save_blackboard_entry(&entry).await?;
 
-        self.emit_event(project_id, CollabEventType::BlackboardUpdated, Some(&author_id), json!({
-            "key": key,
-            "author_type": author_type,
-        })).await;
+        self.emit_event(
+            project_id,
+            CollabEventType::BlackboardUpdated,
+            Some(&author_id),
+            json!({
+                "key": key,
+                "author_type": author_type,
+            }),
+        )
+        .await;
 
         Ok(entry)
     }
@@ -230,15 +282,22 @@ impl CollaborationEngine {
 
         {
             let mut queues = self.task_queues.lock().await;
-            queues.entry(project_id.to_string())
+            queues
+                .entry(project_id.to_string())
                 .or_default()
                 .push_back(task.clone());
         }
 
-        self.emit_event(project_id, CollabEventType::TaskCreated, None, json!({
-            "task_id": task.id,
-            "description": description,
-        })).await;
+        self.emit_event(
+            project_id,
+            CollabEventType::TaskCreated,
+            None,
+            json!({
+                "task_id": task.id,
+                "description": description,
+            }),
+        )
+        .await;
 
         Ok(task)
     }
@@ -255,10 +314,16 @@ impl CollaborationEngine {
         task.status = CollabTaskStatus::Assigned;
         self.store.save_collab_task(&task).await?;
 
-        self.emit_event(&task.project_id, CollabEventType::TaskAssigned, Some(agent_id), json!({
-            "task_id": task_id,
-            "agent_type": agent_type,
-        })).await;
+        self.emit_event(
+            &task.project_id,
+            CollabEventType::TaskAssigned,
+            Some(agent_id),
+            json!({
+                "task_id": task_id,
+                "agent_type": agent_type,
+            }),
+        )
+        .await;
 
         Ok(task)
     }
@@ -271,9 +336,15 @@ impl CollaborationEngine {
         self.store.save_collab_task(&task).await?;
 
         let agent_id = task.assigned_agent_id.as_deref();
-        self.emit_event(&task.project_id, CollabEventType::TaskCompleted, agent_id, json!({
-            "task_id": task_id,
-        })).await;
+        self.emit_event(
+            &task.project_id,
+            CollabEventType::TaskCompleted,
+            agent_id,
+            json!({
+                "task_id": task_id,
+            }),
+        )
+        .await;
 
         Ok(task)
     }
@@ -299,7 +370,9 @@ impl CollaborationEngine {
     pub async fn accept_invite(&self, token: &str, agent_name: String) -> Result<ExternalAgent> {
         let invite = self.store.get_invite_token(token).await?;
         if invite.used_by.is_some() {
-            return Err(Agent1Error::PermissionDenied("invite already used".to_string()));
+            return Err(Agent1Error::PermissionDenied(
+                "invite already used".to_string(),
+            ));
         }
         if let Some(expires) = invite.expires_at {
             if now() > expires {
@@ -316,9 +389,15 @@ impl CollaborationEngine {
         self.store.save_external_agent(&external).await?;
         self.store.mark_invite_used(token, &agent_name).await?;
 
-        self.emit_event(&invite.project_id, CollabEventType::ExternalConnected, Some(&external.id), json!({
-            "agent_name": agent_name,
-        })).await;
+        self.emit_event(
+            &invite.project_id,
+            CollabEventType::ExternalConnected,
+            Some(&external.id),
+            json!({
+                "agent_name": agent_name,
+            }),
+        )
+        .await;
 
         Ok(external)
     }
@@ -340,37 +419,62 @@ impl CollaborationEngine {
     }
 
     pub async fn disconnect_external(&self, project_id: &str, external_id: &str) -> Result<()> {
-        self.store.update_external_status(external_id, ExternalAgentStatus::Disconnected).await?;
-        self.emit_event(project_id, CollabEventType::ExternalDisconnected, Some(external_id), json!({})).await;
+        self.store
+            .update_external_status(external_id, ExternalAgentStatus::Disconnected)
+            .await?;
+        self.emit_event(
+            project_id,
+            CollabEventType::ExternalDisconnected,
+            Some(external_id),
+            json!({}),
+        )
+        .await;
         Ok(())
     }
 
     pub async fn revoke_external(&self, project_id: &str, external_id: &str) -> Result<()> {
-        self.store.update_external_status(external_id, ExternalAgentStatus::Revoked).await?;
-        self.emit_event(project_id, CollabEventType::ExternalDisconnected, Some(external_id), json!({
-            "reason": "revoked",
-        })).await;
+        self.store
+            .update_external_status(external_id, ExternalAgentStatus::Revoked)
+            .await?;
+        self.emit_event(
+            project_id,
+            CollabEventType::ExternalDisconnected,
+            Some(external_id),
+            json!({
+                "reason": "revoked",
+            }),
+        )
+        .await;
         Ok(())
     }
 
     // ─── Presence ───
 
-    pub async fn register_presence(&self, agent_id: &str, project_id: &str, agent_type: AuthorType) {
+    pub async fn register_presence(
+        &self,
+        agent_id: &str,
+        project_id: &str,
+        agent_type: AuthorType,
+    ) {
         let now_ts = now();
         let mut presence = self.agent_presence.write().await;
-        presence.insert(agent_id.to_string(), AgentPresence {
-            agent_id: agent_id.to_string(),
-            project_id: project_id.to_string(),
-            agent_type,
-            connected_at: now_ts,
-            last_activity: now_ts,
-            active_tasks: 0,
-        });
+        presence.insert(
+            agent_id.to_string(),
+            AgentPresence {
+                agent_id: agent_id.to_string(),
+                project_id: project_id.to_string(),
+                agent_type,
+                connected_at: now_ts,
+                last_activity: now_ts,
+                active_tasks: 0,
+            },
+        );
     }
 
     pub async fn get_presence(&self, project_id: &str) -> Vec<AgentPresence> {
         let presence = self.agent_presence.read().await;
-        presence.values()
+        presence
+            .values()
             .filter(|p| p.project_id == project_id)
             .cloned()
             .collect()
@@ -385,12 +489,19 @@ impl CollaborationEngine {
         let blackboard = self.blackboard_read(project_id).await;
         let behavior = self.decide_behavior(&project).await;
 
-        let connected_external_count = externals.iter()
+        let connected_external_count = externals
+            .iter()
             .filter(|e| e.status == ExternalAgentStatus::Connected)
             .count();
 
-        let active_task_count = tasks.iter()
-            .filter(|t| matches!(t.status, CollabTaskStatus::Assigned | CollabTaskStatus::InProgress))
+        let active_task_count = tasks
+            .iter()
+            .filter(|t| {
+                matches!(
+                    t.status,
+                    CollabTaskStatus::Assigned | CollabTaskStatus::InProgress
+                )
+            })
             .count();
 
         Ok(ProjectSummary {
@@ -400,7 +511,10 @@ impl CollaborationEngine {
             connected_external_count,
             total_tasks: tasks.len(),
             active_task_count,
-            completed_task_count: tasks.iter().filter(|t| t.status == CollabTaskStatus::Completed).count(),
+            completed_task_count: tasks
+                .iter()
+                .filter(|t| t.status == CollabTaskStatus::Completed)
+                .count(),
             blackboard_entry_count: blackboard.len(),
             current_behavior: behavior,
         })
@@ -409,29 +523,57 @@ impl CollaborationEngine {
     // ─── Internal Helpers ───
 
     async fn count_connected_externals(&self, project_id: &str) -> usize {
-        self.store.list_external_agents(project_id).await
-            .map(|agents| agents.iter().filter(|a| a.status == ExternalAgentStatus::Connected).count())
+        self.store
+            .list_external_agents(project_id)
+            .await
+            .map(|agents| {
+                agents
+                    .iter()
+                    .filter(|a| a.status == ExternalAgentStatus::Connected)
+                    .count()
+            })
             .unwrap_or(0)
     }
 
     async fn count_active_tasks(&self, project_id: &str) -> usize {
-        self.store.list_collab_tasks(project_id).await
-            .map(|tasks| tasks.iter().filter(|t| {
-                matches!(t.status, CollabTaskStatus::Assigned | CollabTaskStatus::InProgress)
-            }).count())
+        self.store
+            .list_collab_tasks(project_id)
+            .await
+            .map(|tasks| {
+                tasks
+                    .iter()
+                    .filter(|t| {
+                        matches!(
+                            t.status,
+                            CollabTaskStatus::Assigned | CollabTaskStatus::InProgress
+                        )
+                    })
+                    .count()
+            })
             .unwrap_or(0)
     }
 
     async fn has_risky_pending(&self, project_id: &str) -> bool {
-        self.store.list_collab_tasks(project_id).await
-            .map(|tasks| tasks.iter().any(|t| {
-                t.requires_approval && matches!(t.status, CollabTaskStatus::Queued | CollabTaskStatus::Assigned)
-            }))
+        self.store
+            .list_collab_tasks(project_id)
+            .await
+            .map(|tasks| {
+                tasks.iter().any(|t| {
+                    t.requires_approval
+                        && matches!(
+                            t.status,
+                            CollabTaskStatus::Queued | CollabTaskStatus::Assigned
+                        )
+                })
+            })
             .unwrap_or(false)
     }
 
     async fn find_external_by_id(&self, project_id: &str, agent_id: &str) -> Option<ExternalAgent> {
-        self.store.list_external_agents(project_id).await.ok()
+        self.store
+            .list_external_agents(project_id)
+            .await
+            .ok()
             .and_then(|agents| agents.into_iter().find(|a| a.id == agent_id))
     }
 
@@ -482,7 +624,10 @@ mod tests {
         let store = SqliteStore::connect(&db_path).await.unwrap();
         let engine = CollaborationEngine::new(store);
 
-        let project = engine.create_project("Test".into(), CollaborationMode::Automatic).await.unwrap();
+        let project = engine
+            .create_project("Test".into(), CollaborationMode::Automatic)
+            .await
+            .unwrap();
         assert_eq!(project.name, "Test");
 
         let behavior = engine.decide_behavior(&project).await;
@@ -497,11 +642,21 @@ mod tests {
         let store = SqliteStore::connect(&db_path).await.unwrap();
         let engine = CollaborationEngine::new(store);
 
-        let project = engine.create_project("BB Test".into(), CollaborationMode::Automatic).await.unwrap();
+        let project = engine
+            .create_project("BB Test".into(), CollaborationMode::Automatic)
+            .await
+            .unwrap();
 
-        engine.blackboard_write(
-            &project.id, "status".into(), json!("active"), "agent1".into(), AuthorType::Local,
-        ).await.unwrap();
+        engine
+            .blackboard_write(
+                &project.id,
+                "status".into(),
+                json!("active"),
+                "agent1".into(),
+                AuthorType::Local,
+            )
+            .await
+            .unwrap();
 
         let entry = engine.blackboard_get(&project.id, "status").await;
         assert!(entry.is_some());

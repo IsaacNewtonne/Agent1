@@ -11,12 +11,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use agent1_collab::CollaborationEngine;
-use agent1_core::{
-    AuthorType, CollabEventType, ExternalAgent, ExternalAgentStatus,
-    ExternalPermissions, InviteToken, Result, Agent1Error, new_id, now,
-};
+use agent1_core::{now, Agent1Error, AuthorType, ExternalPermissions, InviteToken, Result};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use tokio::sync::RwLock;
 
 /// An active connection from an external agent
@@ -52,11 +49,17 @@ impl ExternalGateway {
         permissions: ExternalPermissions,
         created_by: String,
     ) -> Result<InviteToken> {
-        self.engine.generate_invite(project_id, permissions, created_by).await
+        self.engine
+            .generate_invite(project_id, permissions, created_by)
+            .await
     }
 
     /// Validate a token and register the connection
-    pub async fn authenticate(&self, token: &str, agent_name: String) -> Result<ExternalConnection> {
+    pub async fn authenticate(
+        &self,
+        token: &str,
+        agent_name: String,
+    ) -> Result<ExternalConnection> {
         let external = self.engine.accept_invite(token, agent_name.clone()).await?;
         let now_ts = now();
 
@@ -77,11 +80,9 @@ impl ExternalGateway {
         }
 
         // Register presence
-        self.engine.register_presence(
-            &external.id,
-            &external.project_id,
-            AuthorType::External,
-        ).await;
+        self.engine
+            .register_presence(&external.id, &external.project_id, AuthorType::External)
+            .await;
 
         Ok(connection)
     }
@@ -94,7 +95,9 @@ impl ExternalGateway {
     ) -> Result<GatewayResponse> {
         let connection = {
             let conns = self.connections.read().await;
-            conns.get(external_id).cloned()
+            conns
+                .get(external_id)
+                .cloned()
                 .ok_or_else(|| Agent1Error::PermissionDenied("not connected".to_string()))?
         };
 
@@ -112,10 +115,15 @@ impl ExternalGateway {
 
             GatewayMessage::ReadBlackboard { key } => {
                 if !connection.permissions.can_read_blackboard {
-                    return Err(Agent1Error::PermissionDenied("cannot read blackboard".to_string()));
+                    return Err(Agent1Error::PermissionDenied(
+                        "cannot read blackboard".to_string(),
+                    ));
                 }
                 if let Some(key) = key {
-                    let entry = self.engine.blackboard_get(&connection.project_id, &key).await;
+                    let entry = self
+                        .engine
+                        .blackboard_get(&connection.project_id, &key)
+                        .await;
                     Ok(GatewayResponse::BlackboardEntry { entry })
                 } else {
                     let entries = self.engine.blackboard_read(&connection.project_id).await;
@@ -125,22 +133,36 @@ impl ExternalGateway {
 
             GatewayMessage::WriteBlackboard { key, value } => {
                 if !connection.permissions.can_write_blackboard {
-                    return Err(Agent1Error::PermissionDenied("cannot write blackboard".to_string()));
+                    return Err(Agent1Error::PermissionDenied(
+                        "cannot write blackboard".to_string(),
+                    ));
                 }
-                let entry = self.engine.blackboard_write(
-                    &connection.project_id,
-                    key,
-                    value,
-                    external_id.to_string(),
-                    AuthorType::External,
-                ).await?;
+                let entry = self
+                    .engine
+                    .blackboard_write(
+                        &connection.project_id,
+                        key,
+                        value,
+                        external_id.to_string(),
+                        AuthorType::External,
+                    )
+                    .await?;
                 Ok(GatewayResponse::Written { id: entry.id })
             }
 
-            GatewayMessage::SubmitContribution { description, output } => {
+            GatewayMessage::SubmitContribution {
+                description,
+                output,
+            } => {
                 // Submit as a completed task contribution
-                let mut task = self.engine.submit_task(&connection.project_id, description).await?;
-                task = self.engine.assign_task(&task.id, external_id, AuthorType::External).await?;
+                let mut task = self
+                    .engine
+                    .submit_task(&connection.project_id, description)
+                    .await?;
+                task = self
+                    .engine
+                    .assign_task(&task.id, external_id, AuthorType::External)
+                    .await?;
                 if let Some(output) = output {
                     task = self.engine.complete_task(&task.id, output).await?;
                 }
@@ -162,7 +184,9 @@ impl ExternalGateway {
         };
 
         if let Some(conn) = connection {
-            self.engine.disconnect_external(&conn.project_id, external_id).await?;
+            self.engine
+                .disconnect_external(&conn.project_id, external_id)
+                .await?;
         }
 
         Ok(())
@@ -171,7 +195,8 @@ impl ExternalGateway {
     /// Get all active connections for a project
     pub async fn project_connections(&self, project_id: &str) -> Vec<ExternalConnection> {
         let conns = self.connections.read().await;
-        conns.values()
+        conns
+            .values()
             .filter(|c| c.project_id == project_id)
             .cloned()
             .collect()
@@ -184,7 +209,8 @@ impl ExternalGateway {
 
         let stale_ids: Vec<String> = {
             let conns = self.connections.read().await;
-            conns.iter()
+            conns
+                .iter()
                 .filter(|(_, c)| now_ts - c.last_heartbeat > stale_threshold)
                 .map(|(id, _)| id.clone())
                 .collect()
@@ -202,9 +228,17 @@ impl ExternalGateway {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum GatewayMessage {
     Heartbeat,
-    ReadBlackboard { key: Option<String> },
-    WriteBlackboard { key: String, value: Value },
-    SubmitContribution { description: String, output: Option<String> },
+    ReadBlackboard {
+        key: Option<String>,
+    },
+    WriteBlackboard {
+        key: String,
+        value: Value,
+    },
+    SubmitContribution {
+        description: String,
+        output: Option<String>,
+    },
     Disconnect,
 }
 
@@ -213,9 +247,19 @@ pub enum GatewayMessage {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum GatewayResponse {
     Ack,
-    BlackboardEntry { entry: Option<agent1_core::BlackboardEntry> },
-    BlackboardEntries { entries: Vec<agent1_core::BlackboardEntry> },
-    Written { id: String },
-    TaskCreated { task_id: String },
-    Error { message: String },
+    BlackboardEntry {
+        entry: Option<agent1_core::BlackboardEntry>,
+    },
+    BlackboardEntries {
+        entries: Vec<agent1_core::BlackboardEntry>,
+    },
+    Written {
+        id: String,
+    },
+    TaskCreated {
+        task_id: String,
+    },
+    Error {
+        message: String,
+    },
 }

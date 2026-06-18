@@ -1,6 +1,7 @@
 use crate::types::{check_escalation_triggers, OrchestratorConfig};
 use agent1_core::{
-    EscalationId, EscalationRecord, EscalationStatus, EscalationType, OrchestrationId, StepId, Agent1Error, Result,
+    Agent1Error, EscalationId, EscalationRecord, EscalationStatus, EscalationType, OrchestrationId,
+    Result, StepId,
 };
 use agent1_db::SqliteStore;
 use serde_json::Value;
@@ -10,15 +11,13 @@ use tokio::sync::Mutex;
 
 pub struct EscalationManager {
     store: SqliteStore,
-    config: OrchestratorConfig,
     pending_escalations: Mutex<HashMap<EscalationId, EscalationRecord>>,
 }
 
 impl EscalationManager {
-    pub fn new(store: SqliteStore, config: OrchestratorConfig) -> Self {
+    pub fn new(store: SqliteStore, _config: OrchestratorConfig) -> Self {
         Self {
             store,
-            config,
             pending_escalations: Mutex::new(HashMap::new()),
         }
     }
@@ -103,11 +102,7 @@ impl EscalationManager {
         escalation_from_row(row)
     }
 
-    pub async fn resolve_escalation(
-        &self,
-        id: &EscalationId,
-        response: &str,
-    ) -> Result<()> {
+    pub async fn resolve_escalation(&self, id: &EscalationId, response: &str) -> Result<()> {
         let mut escalation = self.get_escalation(id).await?;
         escalation.resolve(response.to_string());
         self.save_escalation(&escalation).await?;
@@ -118,11 +113,7 @@ impl EscalationManager {
         Ok(())
     }
 
-    pub async fn decline_escalation(
-        &self,
-        id: &EscalationId,
-        reason: &str,
-    ) -> Result<()> {
+    pub async fn decline_escalation(&self, id: &EscalationId, reason: &str) -> Result<()> {
         let mut escalation = self.get_escalation(id).await?;
         escalation.decline(reason.to_string());
         self.save_escalation(&escalation).await?;
@@ -153,8 +144,13 @@ impl EscalationManager {
         Ok(result)
     }
 
-    pub async fn has_pending_escalations(&self, orchestration_id: &OrchestrationId) -> Result<bool> {
-        let pending = self.list_pending_escalations(Some(orchestration_id)).await?;
+    pub async fn has_pending_escalations(
+        &self,
+        orchestration_id: &OrchestrationId,
+    ) -> Result<bool> {
+        let pending = self
+            .list_pending_escalations(Some(orchestration_id))
+            .await?;
         Ok(!pending.is_empty())
     }
 
@@ -176,16 +172,15 @@ impl EscalationManager {
 
 fn escalation_from_row(row: sqlx::sqlite::SqliteRow) -> Result<EscalationRecord> {
     let escalation_type_text: String = row.get("escalation_type");
-    let escalation_type: EscalationType = serde_json::from_str(&escalation_type_text)
-        .unwrap_or(EscalationType::Approval);
+    let escalation_type: EscalationType =
+        serde_json::from_str(&escalation_type_text).unwrap_or(EscalationType::Approval);
 
     let status_text: String = row.get("status");
-    let status: EscalationStatus = serde_json::from_str(&status_text)
-        .unwrap_or(EscalationStatus::Pending);
+    let status: EscalationStatus =
+        serde_json::from_str(&status_text).unwrap_or(EscalationStatus::Pending);
 
     let payload_json: String = row.get("payload");
-    let payload = serde_json::from_str(&payload_json)
-        .unwrap_or(serde_json::Value::Null);
+    let payload = serde_json::from_str(&payload_json).unwrap_or(serde_json::Value::Null);
 
     Ok(EscalationRecord {
         id: row.get("id"),

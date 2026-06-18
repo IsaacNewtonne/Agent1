@@ -1,16 +1,18 @@
-pub mod types;
-pub mod goal_decomposer;
-pub mod team_manager;
-pub mod progress_tracker;
 pub mod escalation;
+pub mod goal_decomposer;
 pub mod orchestrator;
+pub mod progress_tracker;
+pub mod team_manager;
+pub mod types;
 
-pub use goal_decomposer::GoalDecomposer;
-pub use team_manager::TeamManager;
-pub use progress_tracker::ProgressTracker;
 pub use escalation::EscalationManager;
+pub use goal_decomposer::GoalDecomposer;
 pub use orchestrator::Orchestrator;
-pub use types::{OrchestrateRequest, OrchestrateResponse, OrchestratorConfig, PlanView, StepUpdate};
+pub use progress_tracker::ProgressTracker;
+pub use team_manager::TeamManager;
+pub use types::{
+    OrchestrateRequest, OrchestrateResponse, OrchestratorConfig, PlanView, StepUpdate,
+};
 
 use agent1_core::Result;
 use agent1_db::SqliteStore;
@@ -30,11 +32,13 @@ pub async fn run_orchestration(
     let store = SqliteStore::connect(db_path).await?;
     let orchestrator = Orchestrator::new(store, OrchestratorConfig::default());
 
-    orchestrator.orchestrate(OrchestrateRequest {
-        objective: objective.to_string(),
-        workspace_root,
-        auto_approve,
-    }).await
+    orchestrator
+        .orchestrate(OrchestrateRequest {
+            objective: objective.to_string(),
+            workspace_root,
+            auto_approve,
+        })
+        .await
 }
 
 mod agent1_core {

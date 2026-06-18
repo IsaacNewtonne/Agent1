@@ -28,6 +28,7 @@ const MODEL_PROVIDER_LABELS = {
   ollama: "Ollama",
   opencode: "OpenCode",
   openai_compatible: "OpenAI-compatible",
+  nvidia: "NVIDIA NIM",
 };
 
 function loadSettings() {
@@ -83,7 +84,7 @@ export default function CollabWorkspace() {
     [collab.mcpServers]
   );
   const providerOptions = useMemo(() => {
-    const fallback = ["opencode", "ollama", "openai_compatible"].map((provider) => ({
+    const fallback = ["opencode", "ollama", "openai_compatible", "nvidia"].map((provider) => ({
       provider,
       label: MODEL_PROVIDER_LABELS[provider] || provider,
       models: [],

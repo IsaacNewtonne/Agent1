@@ -12,7 +12,7 @@ The current app centers on the **Hybrid Collaboration Workspace**: create a proj
 - 🧑‍💻 **Local agents**: add local worker agents, configure provider/model, and delete agents with a custom confirmation dialog.
 - 🌐 **External agents and MCP servers**: invite or connect external systems from the right lane for project-scoped collaboration.
 - 🛡️ **Permissions and approvals**: local tools use explicit permission policies, external agents use project-scoped permissions, and pending approvals appear in the activity area.
-- 🧠 **Model providers**: supports OpenCode, Ollama, and OpenAI-compatible endpoints.
+- 🧠 **Model providers**: supports OpenCode, Ollama, OpenAI-compatible endpoints, and NVIDIA NIM.
 - ⚡ **Live runtime**: sessions, events, approvals, projects, and model options are served through the local API.
 
 ## Simple User Path
@@ -81,7 +81,7 @@ The current app centers on the **Hybrid Collaboration Workspace**: create a proj
 | 🖼️ Desktop UI | `desktop/` | React/Tauri Hybrid Collaboration Workspace. |
 | 🧩 CLI/API | `crates/agent1-cli/` | Local API server, CLI commands, routes, and app bootstrap. |
 | ⚙️ Runtime | `crates/agent1-runtime/` | Agent session execution, tools, approvals, events, and failure handling. |
-| 🧠 Models | `crates/agent1-models/` | OpenCode, Ollama, and OpenAI-compatible model adapters. |
+| 🧠 Models | `crates/agent1-models/` | OpenCode, Ollama, OpenAI-compatible, and NVIDIA NIM model adapters. |
 | 🗄️ Database | `crates/agent1-db/` | SQLite persistence for agents, sessions, projects, events, approvals, and collaboration records. |
 | 🧭 Collaboration | `crates/agent1-collab/` | Project state, collaboration modes, blackboard, tasks, and external agent records. |
 | 🌉 Gateway | `crates/agent1-gateway/` | Invite-token flow and project-scoped external agent access. |
@@ -114,7 +114,7 @@ The current app centers on the **Hybrid Collaboration Workspace**: create a proj
 | 🚦 `agent1 server` | Start the local API server. |
 | 💬 `agent1 run --agent agents/assistant.toml --task "hello"` | Run an agent from the CLI. |
 | 👥 `agent1 team --task "..."` | Run planner, worker, and critic agents. |
-| 🧠 `agent1 models --provider ollama` | List models for a provider. |
+| 🧠 `agent1 models --provider ollama` | List models for a provider. Use `--provider nvidia` for NVIDIA NIM. |
 | ➕ `agent1 agent create agents/my-agent.toml` | Save an agent definition. |
 | 🧰 `agent1 mcp list` | List MCP servers. |
 | 📚 `agent1 sessions` | List recent sessions. |
@@ -147,6 +147,17 @@ $env:OLLAMA_BASE_URL = "http://localhost:11434"
 ```powershell
 $env:OPENAI_BASE_URL = "http://localhost:8000/v1"
 ```
+
+### NVIDIA NIM
+
+🚀 Agent1 supports NVIDIA NIM through the OpenAI-compatible chat completions and models APIs. Set your NVIDIA API key before starting the API server or desktop app:
+
+```powershell
+$env:NVIDIA_API_KEY = "nvapi-..."
+cargo run --bin agent1 -- models --provider nvidia
+```
+
+The default NVIDIA base URL is `https://integrate.api.nvidia.com/v1`. Agent definitions should use provider `nvidia` and one of the model IDs returned by the model listing command or the desktop dropdown.
 
 ## Troubleshooting
 

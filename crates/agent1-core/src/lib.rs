@@ -636,24 +636,57 @@ impl StepStatus {
 pub fn check_escalation_triggers(content: &str) -> Option<(EscalationType, String)> {
     let content_lower = content.to_lowercase();
 
-    let security_triggers = ["api_key", "apikey", "secret", "password", "token", "authorization"];
+    let security_triggers = [
+        "api_key",
+        "apikey",
+        "secret",
+        "password",
+        "token",
+        "authorization",
+    ];
     if security_triggers.iter().any(|t| content_lower.contains(t)) {
-        return Some((EscalationType::Security, "Operation involves security-sensitive data".to_string()));
+        return Some((
+            EscalationType::Security,
+            "Operation involves security-sensitive data".to_string(),
+        ));
     }
 
-    let finance_triggers = ["payment", "billing", "purchase", "subscription", "invoice", "refund"];
+    let finance_triggers = [
+        "payment",
+        "billing",
+        "purchase",
+        "subscription",
+        "invoice",
+        "refund",
+    ];
     if finance_triggers.iter().any(|t| content_lower.contains(t)) {
-        return Some((EscalationType::Finance, "Operation involves financial transaction".to_string()));
+        return Some((
+            EscalationType::Finance,
+            "Operation involves financial transaction".to_string(),
+        ));
     }
 
-    let access_triggers = ["oauth", "connect_account", "authentication", "login"];
+    let access_triggers = [
+        "oauth",
+        "connect_account",
+        "authentication",
+        "login",
+        "connect to my",
+        "account access",
+    ];
     if access_triggers.iter().any(|t| content_lower.contains(t)) {
-        return Some((EscalationType::Access, "Operation requires account access".to_string()));
+        return Some((
+            EscalationType::Access,
+            "Operation requires account access".to_string(),
+        ));
     }
 
     let identity_triggers = ["email", "phone", "send_sms", "send_email"];
     if identity_triggers.iter().any(|t| content_lower.contains(t)) {
-        return Some((EscalationType::Identity, "Operation involves personal identity data".to_string()));
+        return Some((
+            EscalationType::Identity,
+            "Operation involves personal identity data".to_string(),
+        ));
     }
 
     None
@@ -853,7 +886,13 @@ pub struct BlackboardEntry {
 }
 
 impl BlackboardEntry {
-    pub fn new(project_id: ProjectId, key: String, value: Value, author_id: String, author_type: AuthorType) -> Self {
+    pub fn new(
+        project_id: ProjectId,
+        key: String,
+        value: Value,
+        author_id: String,
+        author_type: AuthorType,
+    ) -> Self {
         let now = now();
         Self {
             id: new_id("bb"),
@@ -884,8 +923,12 @@ pub struct ExternalPermissions {
     pub max_concurrent_tasks: u32,
 }
 
-fn default_true() -> bool { true }
-fn default_max_tasks() -> u32 { 2 }
+fn default_true() -> bool {
+    true
+}
+fn default_max_tasks() -> u32 {
+    2
+}
 
 impl Default for ExternalPermissions {
     fn default() -> Self {
@@ -926,7 +969,12 @@ pub struct ExternalAgent {
 }
 
 impl ExternalAgent {
-    pub fn new(project_id: ProjectId, name: String, token: String, permissions: ExternalPermissions) -> Self {
+    pub fn new(
+        project_id: ProjectId,
+        name: String,
+        token: String,
+        permissions: ExternalPermissions,
+    ) -> Self {
         Self {
             id: new_id("ext"),
             project_id,
@@ -959,7 +1007,11 @@ pub struct InviteToken {
 }
 
 impl InviteToken {
-    pub fn generate(project: &Project, permissions: ExternalPermissions, created_by: String) -> Self {
+    pub fn generate(
+        project: &Project,
+        permissions: ExternalPermissions,
+        created_by: String,
+    ) -> Self {
         let token = format!("inv_{}", Uuid::now_v7().simple());
         Self {
             token,

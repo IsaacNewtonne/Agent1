@@ -1,15 +1,13 @@
 use std::{path::Path, str::FromStr};
 
 use agent1_core::{
-    Agent, Agent1Error, AgentCard, ApprovalRecord, EventType, McpServerConfig, MemoryItem, Message,
-    MessageRole, Result, RuntimeEvent, Session, SessionStatus, ToolCallRecord, ToolCallStatus, now,
-    redact_secrets_text, redact_secrets_value,
-    BlackboardEntry, CollabEvent, CollabTask, CollabTaskStatus, CollaborationMode,
-    ExternalAgent, ExternalAgentStatus, ExternalPermissions, InviteToken, Project,
-    AuthorType,
+    now, redact_secrets_text, redact_secrets_value, Agent, Agent1Error, AgentCard, ApprovalRecord,
+    BlackboardEntry, CollabEvent, CollabTask, CollaborationMode, EventType, ExternalAgent,
+    ExternalAgentStatus, InviteToken, McpServerConfig, MemoryItem, Message, MessageRole, Project,
+    Result, RuntimeEvent, Session, SessionStatus, ToolCallRecord, ToolCallStatus,
 };
 use chrono::{DateTime, Utc};
-use sqlx::{Executor, Row, SqlitePool, sqlite::SqliteConnectOptions};
+use sqlx::{sqlite::SqliteConnectOptions, Executor, Row, SqlitePool};
 
 const INITIAL_SCHEMA: &str = include_str!("../migrations/0001_initial.sql");
 const ORCHESTRATOR_SCHEMA: &str = include_str!("../migrations/0002_orchestrator.sql");
@@ -44,18 +42,21 @@ impl SqliteStore {
     }
 
     async fn migrate(&self) -> Result<()> {
-        self.pool
-            .execute(INITIAL_SCHEMA)
-            .await
-            .map_err(|err| Agent1Error::Runtime(format!("failed to run initial migration: {err}")))?;
+        self.pool.execute(INITIAL_SCHEMA).await.map_err(|err| {
+            Agent1Error::Runtime(format!("failed to run initial migration: {err}"))
+        })?;
         self.pool
             .execute(ORCHESTRATOR_SCHEMA)
             .await
-            .map_err(|err| Agent1Error::Runtime(format!("failed to run orchestrator migration: {err}")))?;
+            .map_err(|err| {
+                Agent1Error::Runtime(format!("failed to run orchestrator migration: {err}"))
+            })?;
         self.pool
             .execute(COLLABORATION_SCHEMA)
             .await
-            .map_err(|err| Agent1Error::Runtime(format!("failed to run collaboration migration: {err}")))?;
+            .map_err(|err| {
+                Agent1Error::Runtime(format!("failed to run collaboration migration: {err}"))
+            })?;
         Ok(())
     }
 
@@ -892,23 +893,31 @@ impl SqliteStore {
         rows.into_iter().map(external_agent_from_row).collect()
     }
 
-    pub async fn update_external_status(&self, external_id: &str, status: ExternalAgentStatus) -> Result<()> {
+    pub async fn update_external_status(
+        &self,
+        external_id: &str,
+        status: ExternalAgentStatus,
+    ) -> Result<()> {
         sqlx::query("UPDATE external_agents SET status = ?1 WHERE id = ?2")
             .bind(json_name(&status)?)
             .bind(external_id)
             .execute(&self.pool)
             .await
-            .map_err(|err| Agent1Error::Runtime(format!("failed to update external status: {err}")))?;
+            .map_err(|err| {
+                Agent1Error::Runtime(format!("failed to update external status: {err}"))
+            })?;
         Ok(())
     }
 
     pub async fn update_external_heartbeat(&self, external_id: &str) -> Result<()> {
-        sqlx::query("UPDATE external_agents SET last_heartbeat = ?1, status = 'connected' WHERE id = ?2")
-            .bind(now())
-            .bind(external_id)
-            .execute(&self.pool)
-            .await
-            .map_err(|err| Agent1Error::Runtime(format!("failed to update heartbeat: {err}")))?;
+        sqlx::query(
+            "UPDATE external_agents SET last_heartbeat = ?1, status = 'connected' WHERE id = ?2",
+        )
+        .bind(now())
+        .bind(external_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|err| Agent1Error::Runtime(format!("failed to update heartbeat: {err}")))?;
         Ok(())
     }
 
@@ -917,7 +926,9 @@ impl SqliteStore {
             .bind(external_id)
             .execute(&self.pool)
             .await
-            .map_err(|err| Agent1Error::Runtime(format!("failed to delete external agent: {err}")))?;
+            .map_err(|err| {
+                Agent1Error::Runtime(format!("failed to delete external agent: {err}"))
+            })?;
         Ok(())
     }
 
@@ -1037,7 +1048,11 @@ impl SqliteStore {
         Ok(())
     }
 
-    pub async fn recent_collab_events(&self, project_id: &str, limit: i64) -> Result<Vec<CollabEvent>> {
+    pub async fn recent_collab_events(
+        &self,
+        project_id: &str,
+        limit: i64,
+    ) -> Result<Vec<CollabEvent>> {
         let rows = sqlx::query(
             "SELECT id, project_id, event_type, agent_id, payload_json, created_at FROM collab_events WHERE project_id = ?1 ORDER BY created_at DESC LIMIT ?2",
         )
@@ -1254,7 +1269,10 @@ fn collab_task_from_row(row: sqlx::sqlite::SqliteRow) -> Result<CollabTask> {
         project_id: row.get("project_id"),
         description: row.get("description"),
         assigned_agent_id: row.get("assigned_agent_id"),
-        assigned_agent_type: agent_type_text.as_deref().map(|t| parse_json_string_enum(t, "author type")).transpose()?,
+        assigned_agent_type: agent_type_text
+            .as_deref()
+            .map(|t| parse_json_string_enum(t, "author type"))
+            .transpose()?,
         status: parse_json_string_enum(&status_text, "collab task status")?,
         output: row.get("output"),
         requires_approval: row.get::<bool, _>("requires_approval"),
@@ -1279,7 +1297,7 @@ fn collab_event_from_row(row: sqlx::sqlite::SqliteRow) -> Result<CollabEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent1_core::{ApprovalRecord, new_id};
+    use agent1_core::{new_id, ApprovalRecord};
     use serde_json::json;
     use std::path::PathBuf;
 

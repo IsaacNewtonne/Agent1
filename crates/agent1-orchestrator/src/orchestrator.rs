@@ -3,11 +3,13 @@ use crate::{
     goal_decomposer::GoalDecomposer,
     progress_tracker::ProgressTracker,
     team_manager::TeamManager,
-    types::{check_escalation_triggers, OrchestrateRequest, OrchestrateResponse, OrchestratorConfig},
+    types::{
+        check_escalation_triggers, OrchestrateRequest, OrchestrateResponse, OrchestratorConfig,
+    },
 };
 use agent1_core::{
-    ExecutionStep, OrchestrationId, OrchestrationSession, StepId,
-    OrchestrationStatus, RuntimeEvent, StepStatus, now, EventType, Result,
+    now, EventType, ExecutionStep, OrchestrationId, OrchestrationSession, OrchestrationStatus,
+    Result, RuntimeEvent, StepId, StepStatus,
 };
 use agent1_db::SqliteStore;
 use futures_util::future::join_all;
@@ -20,7 +22,6 @@ struct StepExecutionResult {
     output: Option<String>,
     error: Option<String>,
     escalated: bool,
-    escalated_type: Option<agent1_core::EscalationType>,
     escalated_description: Option<String>,
 }
 
@@ -45,10 +46,7 @@ impl Orchestrator {
         }
     }
 
-    pub async fn orchestrate(
-        &self,
-        request: OrchestrateRequest,
-    ) -> Result<OrchestrateResponse> {
+    pub async fn orchestrate(&self, request: OrchestrateRequest) -> Result<OrchestrateResponse> {
         let workspace_root = request
             .workspace_root
             .map(PathBuf::from)
@@ -69,16 +67,41 @@ impl Orchestrator {
         session.status = OrchestrationStatus::Planning;
         self.progress.save_orchestration(&session).await?;
 
-        let plan_view = self.decomposer.decompose(&request.objective, &session.id).await?;
+        let plan_view = self
+            .decomposer
+            .decompose(&request.objective, &session.id)
+            .await?;
+        self.progress
+            .save_plan(&plan_view.plan, &plan_view.steps)
+            .await?;
 
         session.plan_id = Some(plan_view.plan.id.clone());
         session.status = OrchestrationStatus::Executing;
         self.progress.save_orchestration(&session).await?;
 
-        self.execute_plan(&session, &plan_view.steps, &workspace_root, request.auto_approve)
+        self.execute_plan(
+            &session,
+            &plan_view.steps,
+            &workspace_root,
+            request.auto_approve,
+        )
+        .await?;
+
+        let (mut completed_plan, completed_steps) = self
+            .progress
+            .get_plan_with_steps(&plan_view.plan.id)
+            .await?;
+        let all_complete = self.progress.is_plan_complete(&completed_steps);
+        completed_plan.status = if all_complete {
+            agent1_core::PlanStatus::Completed
+        } else {
+            agent1_core::PlanStatus::Failed
+        };
+        completed_plan.completed_at = Some(now());
+        self.progress
+            .save_plan(&completed_plan, &completed_steps)
             .await?;
 
-        let all_complete = plan_view.steps.iter().all(|s| s.status == StepStatus::Completed);
         session.status = if all_complete {
             OrchestrationStatus::Completed
         } else {
@@ -117,9 +140,7 @@ impl Orchestrator {
         let session_id = session.id.clone();
 
         while !steps.is_empty() {
-            let ready_steps: Vec<_> = self
-                .decomposer
-                .get_ready_steps(&steps, &completed_ids);
+            let ready_steps: Vec<_> = self.decomposer.get_ready_steps(&steps, &completed_ids);
 
             if ready_steps.is_empty() {
                 let has_pending = steps.iter().any(|s| s.status == StepStatus::Pending);
@@ -130,7 +151,9 @@ impl Orchestrator {
                 }
                 if has_blocked {
                     for step in steps.iter_mut() {
-                        if step.status == StepStatus::Pending && step.dependencies.iter().all(|d| completed_ids.contains(d)) {
+                        if step.status == StepStatus::Pending
+                            && step.dependencies.iter().all(|d| completed_ids.contains(d))
+                        {
                         } else if step.status == StepStatus::Pending {
                             step.status = StepStatus::Blocked;
                         }
@@ -183,23 +206,28 @@ impl Orchestrator {
                             json!({"step": step.description}),
                         );
 
-                        if let Err(e) = orchestrator_clone.escalation.save_escalation(&esc_record).await {
+                        if let Err(e) = orchestrator_clone
+                            .escalation
+                            .save_escalation(&esc_record)
+                            .await
+                        {
                             tracing::error!("failed to save escalation: {}", e);
                         }
 
-                        let _ = orchestrator_clone.emit(
-                            &session_id_clone,
-                            None,
-                            EventType::EscalationCreated,
-                            json!({"escalation_id": esc_record.id, "step_id": step.id}),
-                        ).await;
+                        let _ = orchestrator_clone
+                            .emit(
+                                &session_id_clone,
+                                None,
+                                EventType::EscalationCreated,
+                                json!({"escalation_id": esc_record.id, "step_id": step.id}),
+                            )
+                            .await;
 
                         return StepExecutionResult {
                             step_id: step.id,
                             output: None,
                             error: None,
                             escalated: true,
-                            escalated_type: Some(escalation.0),
                             escalated_description: Some(escalation.1),
                         };
                     }
@@ -210,14 +238,20 @@ impl Orchestrator {
                         tracing::error!("failed to save step start: {}", e);
                     }
 
-                    let _ = orchestrator_clone.emit(
-                        &session_id_clone,
-                        None,
-                        EventType::StepStarted,
-                        json!({"step_id": step.id, "description": step.description}),
-                    ).await;
+                    let _ = orchestrator_clone
+                        .emit(
+                            &session_id_clone,
+                            None,
+                            EventType::StepStarted,
+                            json!({"step_id": step.id, "description": step.description}),
+                        )
+                        .await;
 
-                    match orchestrator_clone.team_manager.run_step(&step, workspace, auto_approve).await {
+                    match orchestrator_clone
+                        .team_manager
+                        .run_step(&step, workspace, auto_approve)
+                        .await
+                    {
                         Ok(output) => {
                             step.complete(output);
                             StepExecutionResult {
@@ -225,7 +259,6 @@ impl Orchestrator {
                                 output: Some(step.output.clone().unwrap_or_default()),
                                 error: None,
                                 escalated: false,
-                                escalated_type: None,
                                 escalated_description: None,
                             }
                         }
@@ -236,7 +269,6 @@ impl Orchestrator {
                                 output: None,
                                 error: Some(err.to_string()),
                                 escalated: false,
-                                escalated_type: None,
                                 escalated_description: None,
                             }
                         }
@@ -251,7 +283,8 @@ impl Orchestrator {
             for result in results {
                 match result {
                     Ok(exec_result) => {
-                        let step = steps.iter_mut()
+                        let step = steps
+                            .iter_mut()
                             .find(|s| s.id == exec_result.step_id)
                             .expect("step should exist in steps list");
 
@@ -267,26 +300,36 @@ impl Orchestrator {
                                 json!({"step_id": step.id, "status": "blocked", "escalation": exec_result.escalated_description}),
                             ).await;
                         } else if let Some(error) = exec_result.error {
+                            step.status = StepStatus::Failed;
+                            step.output = Some(error.clone());
+                            step.completed_at = Some(now());
                             if let Err(e) = self.progress.save_step(step).await {
                                 tracing::error!("failed to save failed step: {}", e);
                             }
-                            let _ = self.emit(
-                                &session.id,
-                                None,
-                                EventType::StepCompleted,
-                                json!({"step_id": step.id, "status": "failed", "error": error}),
-                            ).await;
+                            let _ = self
+                                .emit(
+                                    &session.id,
+                                    None,
+                                    EventType::StepCompleted,
+                                    json!({"step_id": step.id, "status": "failed", "error": error}),
+                                )
+                                .await;
                             completed_ids.insert(exec_result.step_id);
                         } else {
+                            step.status = StepStatus::Completed;
+                            step.output = exec_result.output;
+                            step.completed_at = Some(now());
                             if let Err(e) = self.progress.save_step(step).await {
                                 tracing::error!("failed to save completed step: {}", e);
                             }
-                            let _ = self.emit(
-                                &session.id,
-                                None,
-                                EventType::StepCompleted,
-                                json!({"step_id": step.id, "status": "completed"}),
-                            ).await;
+                            let _ = self
+                                .emit(
+                                    &session.id,
+                                    None,
+                                    EventType::StepCompleted,
+                                    json!({"step_id": step.id, "status": "completed"}),
+                                )
+                                .await;
                             completed_ids.insert(exec_result.step_id);
                         }
                     }
@@ -321,7 +364,10 @@ impl Orchestrator {
             .await
     }
 
-    pub async fn get_status(&self, orchestration_id: &OrchestrationId) -> Result<OrchestrationSession> {
+    pub async fn get_status(
+        &self,
+        orchestration_id: &OrchestrationId,
+    ) -> Result<OrchestrationSession> {
         self.progress.get_orchestration(orchestration_id).await
     }
 
@@ -366,12 +412,18 @@ mod tests {
 
         let orchestrator = Orchestrator::new(store, OrchestratorConfig::default());
 
-        let result = orchestrator.orchestrate(OrchestrateRequest {
-            objective: "Say hello and finish".to_string(),
-            workspace_root: Some(".".to_string()),
-            auto_approve: true,
-        }).await;
+        let result = orchestrator
+            .orchestrate(OrchestrateRequest {
+                objective: "Say hello and finish".to_string(),
+                workspace_root: Some(".".to_string()),
+                auto_approve: true,
+            })
+            .await;
 
-        assert!(result.is_ok(), "orchestration should succeed");
+        assert!(
+            result.is_ok(),
+            "orchestration should succeed: {:?}",
+            result.err()
+        );
     }
 }

@@ -6,21 +6,21 @@ use std::{
 };
 
 use agent1_core::{
-    Agent, Agent1Error, ApprovalRecord, ChatMessage, ChatRequest, EventType, McpServerConfig,
-    MemoryItem, Message, MessageRole, PermissionMode, Result, RuntimeEvent, Session, SessionStatus,
-    ToolCallRecord, ToolCallStatus, ToolDefinition, ToolResult, new_id, now,
+    new_id, now, Agent, Agent1Error, ApprovalRecord, ChatMessage, ChatRequest, EventType,
+    McpServerConfig, MemoryItem, Message, MessageRole, PermissionMode, Result, RuntimeEvent,
+    Session, SessionStatus, ToolCallRecord, ToolCallStatus, ToolDefinition, ToolResult,
 };
 use agent1_db::SqliteStore;
 use agent1_models::provider_for;
 use agent1_tools::{ToolContext, ToolRegistry};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::{Child, ChildStdin, ChildStdout, Command},
     sync::{Mutex, Semaphore},
-    time::{Duration, timeout},
+    time::{timeout, Duration},
 };
 
 #[derive(Debug, Clone)]
@@ -29,6 +29,7 @@ pub struct RunAgentRequest {
     pub input: String,
     pub title: Option<String>,
     pub workspace_root: PathBuf,
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -96,7 +97,7 @@ impl<A: ApprovalDelegate + Clone> AgentRuntime<A> {
                 Agent1Error::Runtime("concurrent session limit reached".to_string())
             })?;
         self.store.save_agent(&request.agent).await?;
-        let session_id = new_id("sess");
+        let session_id = request.session_id.unwrap_or_else(|| new_id("sess"));
         let created_at = now();
         let session = Session {
             id: session_id.clone(),
@@ -597,6 +598,7 @@ impl<A: ApprovalDelegate + Clone> AgentRuntime<A> {
                     agent: target_agent,
                     input: input.task,
                     workspace_root: workspace_root.clone(),
+                    session_id: None,
                 }))
                 .await?;
                 self.emit(
@@ -621,7 +623,9 @@ impl<A: ApprovalDelegate + Clone> AgentRuntime<A> {
                         server.name
                     )));
                 }
-                let value = call_mcp_tool(&server, &input.tool, input.input).await?;
+                let value =
+                    call_mcp_tool_scoped(&server, &input.tool, input.input, Some(session_id))
+                        .await?;
                 Ok(ToolResult {
                     content: serde_json::to_string_pretty(&value)
                         .unwrap_or_else(|_| value.to_string()),
@@ -903,19 +907,28 @@ pub async fn call_mcp_tool(
     tool_name: &str,
     input: Value,
 ) -> Result<Value> {
+    call_mcp_tool_scoped(server, tool_name, input, None).await
+}
+
+pub async fn call_mcp_tool_scoped(
+    server: &McpServerConfig,
+    tool_name: &str,
+    input: Value,
+    scope: Option<&str>,
+) -> Result<Value> {
     let params = json!({
         "name": tool_name,
         "arguments": if input.is_null() { json!({}) } else { input }
     });
-    call_mcp(server, "tools/call", Some(params)).await
+    call_mcp_scoped(server, "tools/call", Some(params), scope).await
 }
 
 pub async fn list_mcp_tools(server: &McpServerConfig) -> Result<Value> {
-    call_mcp(server, "tools/list", Some(json!({}))).await
+    call_mcp_scoped(server, "tools/list", Some(json!({})), None).await
 }
 
 pub async fn check_mcp_server_health(server: &McpServerConfig) -> bool {
-    let key = match mcp_server_key(server) {
+    let key = match mcp_server_key(server, None) {
         Ok(k) => k,
         Err(_) => return false,
     };
@@ -933,14 +946,19 @@ pub async fn check_mcp_server_health(server: &McpServerConfig) -> bool {
     true
 }
 
-async fn call_mcp(server: &McpServerConfig, method: &str, params: Option<Value>) -> Result<Value> {
+async fn call_mcp_scoped(
+    server: &McpServerConfig,
+    method: &str,
+    params: Option<Value>,
+    scope: Option<&str>,
+) -> Result<Value> {
     if server.transport != "stdio" {
         return Err(Agent1Error::Config(format!(
             "unsupported MCP transport `{}`",
             server.transport
         )));
     }
-    let key = mcp_server_key(server)?;
+    let key = mcp_server_key(server, scope)?;
     for attempt in 0..2 {
         let session = get_or_start_mcp_session(server, &key).await?;
         let mut session = session.lock().await;
@@ -974,7 +992,7 @@ async fn call_mcp(server: &McpServerConfig, method: &str, params: Option<Value>)
     )))
 }
 
-fn mcp_server_key(server: &McpServerConfig) -> Result<String> {
+fn mcp_server_key(server: &McpServerConfig, scope: Option<&str>) -> Result<String> {
     let command = server
         .command
         .as_deref()
@@ -985,14 +1003,18 @@ fn mcp_server_key(server: &McpServerConfig) -> Result<String> {
         .map(|(key, value)| format!("{key}={value}"))
         .collect::<Vec<_>>()
         .join(";");
-    Ok(format!(
+    let base = format!(
         "{}|{}|{}|{}|{}",
         server.id,
         server.name,
         command,
         server.args.join(" "),
         env
-    ))
+    );
+    Ok(match scope {
+        Some(scope) => format!("{base}|scope:{scope}"),
+        None => format!("{base}|scope:shared"),
+    })
 }
 
 async fn get_or_start_mcp_session(
@@ -1025,6 +1047,25 @@ async fn remove_mcp_session(key: &str) {
 pub async fn shutdown_mcp_pool() {
     let mut pool = mcp_pool().lock().await;
     for (_, session_arc) in pool.drain() {
+        let mut session = session_arc.lock().await;
+        let _ = session.child.kill().await;
+    }
+}
+
+pub async fn shutdown_mcp_scope(scope: &str) {
+    let suffix = format!("|scope:{scope}");
+    let sessions = {
+        let mut pool = mcp_pool().lock().await;
+        let keys = pool
+            .keys()
+            .filter(|key| key.ends_with(&suffix))
+            .cloned()
+            .collect::<Vec<_>>();
+        keys.into_iter()
+            .filter_map(|key| pool.remove(&key))
+            .collect::<Vec<_>>()
+    };
+    for session_arc in sessions {
         let mut session = session_arc.lock().await;
         let _ = session.child.kill().await;
     }
@@ -1239,6 +1280,7 @@ mod tests {
                 input: "finish".to_string(),
                 title: Some("mock".to_string()),
                 workspace_root: PathBuf::from("."),
+                session_id: None,
             })
             .await
             .expect("mock final run should complete");
@@ -1256,6 +1298,7 @@ mod tests {
                 input: "list files".to_string(),
                 title: Some("mock tool".to_string()),
                 workspace_root: PathBuf::from("."),
+                session_id: None,
             })
             .await
             .expect("mock tool run should complete");
@@ -1279,6 +1322,7 @@ mod tests {
                 input: "loop".to_string(),
                 title: Some("mock failure".to_string()),
                 workspace_root: PathBuf::from("."),
+                session_id: None,
             })
             .await;
         assert!(result.is_err());
@@ -1317,14 +1361,13 @@ mod tests {
                 input: "call mcp".to_string(),
                 title: Some("mcp disabled".to_string()),
                 workspace_root: PathBuf::from("."),
+                session_id: None,
             })
             .await;
-        assert!(
-            result
-                .expect_err("disabled MCP should fail")
-                .to_string()
-                .contains("disabled")
-        );
+        assert!(result
+            .expect_err("disabled MCP should fail")
+            .to_string()
+            .contains("disabled"));
     }
 
     #[tokio::test]
@@ -1348,6 +1391,69 @@ mod tests {
             .to_string();
         assert!(error.contains("MCP stderr"));
         assert!(error.contains("mcp crashed"));
+    }
+
+    #[test]
+    fn mcp_keys_include_scope() {
+        let timestamp = now();
+        let server = McpServerConfig {
+            id: "server".to_string(),
+            name: "server".to_string(),
+            transport: "stdio".to_string(),
+            command: Some("cmd".to_string()),
+            args: Vec::new(),
+            env: Default::default(),
+            enabled: true,
+            created_at: timestamp,
+            updated_at: timestamp,
+        };
+        let shared = mcp_server_key(&server, None).expect("shared key");
+        let scoped = mcp_server_key(&server, Some("sess_test")).expect("scoped key");
+        assert_ne!(shared, scoped);
+        assert!(shared.ends_with("|scope:shared"));
+        assert!(scoped.ends_with("|scope:sess_test"));
+    }
+
+    #[tokio::test]
+    async fn shutdown_mcp_scope_only_removes_matching_scope() {
+        let timestamp = now();
+        let (command, args) = sleepy_server_command();
+        let server = McpServerConfig {
+            id: format!("sleepy-{}", new_id("test")),
+            name: "sleepy".to_string(),
+            transport: "stdio".to_string(),
+            command: Some(command),
+            args,
+            env: Default::default(),
+            enabled: true,
+            created_at: timestamp,
+            updated_at: timestamp,
+        };
+        let scoped_key = mcp_server_key(&server, Some("sess_scope")).expect("scoped key");
+        let shared_key = mcp_server_key(&server, None).expect("shared key");
+        {
+            let mut pool = mcp_pool().lock().await;
+            pool.insert(
+                scoped_key.clone(),
+                Arc::new(Mutex::new(
+                    start_mcp_session(&server).await.expect("scoped session"),
+                )),
+            );
+            pool.insert(
+                shared_key.clone(),
+                Arc::new(Mutex::new(
+                    start_mcp_session(&server).await.expect("shared session"),
+                )),
+            );
+        }
+
+        shutdown_mcp_scope("sess_scope").await;
+
+        let pool = mcp_pool().lock().await;
+        assert!(!pool.contains_key(&scoped_key));
+        assert!(pool.contains_key(&shared_key));
+        drop(pool);
+        shutdown_mcp_pool().await;
     }
 
     async fn test_store(name: &str) -> SqliteStore {
@@ -1399,6 +1505,26 @@ mod tests {
                 "-lc".to_string(),
                 "echo 'mcp crashed' 1>&2; exit 1".to_string(),
             ],
+        )
+    }
+
+    #[cfg(windows)]
+    fn sleepy_server_command() -> (String, Vec<String>) {
+        (
+            "powershell".to_string(),
+            vec![
+                "-NoProfile".to_string(),
+                "-Command".to_string(),
+                "Start-Sleep -Seconds 30".to_string(),
+            ],
+        )
+    }
+
+    #[cfg(not(windows))]
+    fn sleepy_server_command() -> (String, Vec<String>) {
+        (
+            "sh".to_string(),
+            vec!["-lc".to_string(), "sleep 30".to_string()],
         )
     }
 }

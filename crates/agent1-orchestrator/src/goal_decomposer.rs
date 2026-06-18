@@ -1,10 +1,9 @@
 use crate::types::{ExecutionPlan, ExecutionStep, OrchestratorConfig, PlanView};
 use agent1_core::{
-    AgentRole, ChatMessage, ChatRequest,
-    PlanId, PlanStatus, new_id, now, Agent1Error, ModelConfig, Result,
+    now, Agent1Error, AgentRole, ChatMessage, ChatRequest, ModelConfig, PlanId, PlanStatus, Result,
 };
 use agent1_models::provider_for;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use std::collections::HashSet;
 
 fn planner_model_config() -> ModelConfig {
@@ -22,14 +21,33 @@ fn planner_model_config() -> ModelConfig {
 #[derive(Debug, Deserialize)]
 struct PlanStep {
     description: String,
+    #[serde(default, deserialize_with = "deserialize_dependency_indices")]
     dependencies: Vec<String>,
     assigned_role: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct GeneratedPlan {
-    summary: String,
     steps: Vec<PlanStep>,
+}
+
+fn deserialize_dependency_indices<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let values = Vec::<serde_json::Value>::deserialize(deserializer)?;
+    values
+        .into_iter()
+        .map(|value| match value {
+            serde_json::Value::String(text) => Ok(text),
+            serde_json::Value::Number(number) => Ok(number.to_string()),
+            other => Err(serde::de::Error::custom(format!(
+                "dependency index must be string or number, got {other}"
+            ))),
+        })
+        .collect()
 }
 
 pub struct GoalDecomposer {
@@ -41,12 +59,7 @@ impl GoalDecomposer {
         Self { config }
     }
 
-    pub async fn decompose(
-        &self,
-        goal: &str,
-        orchestration_id: &str,
-    ) -> Result<PlanView> {
-        let plan_id = new_id("plan");
+    pub async fn decompose(&self, goal: &str, orchestration_id: &str) -> Result<PlanView> {
         let plan = ExecutionPlan::new(
             orchestration_id.to_string(),
             format!("Plan for: {}", goal),
@@ -54,10 +67,14 @@ impl GoalDecomposer {
         );
 
         let prompt = self.build_decomposition_prompt(goal);
-        let plan_json = self.call_planner(&prompt).await?;
-        let generated = self.parse_plan_response(&plan_json)?;
+        let generated = match self.call_planner(&prompt).await {
+            Ok(plan_json) => self
+                .parse_plan_response(&plan_json)
+                .unwrap_or_else(|_| self.fallback_plan(goal)),
+            Err(_) => self.fallback_plan(goal),
+        };
 
-        let steps = self.build_steps(&plan_id, generated.steps)?;
+        let steps = self.build_steps(&plan.id, generated.steps)?;
 
         let plan_with_status = ExecutionPlan {
             id: plan.id,
@@ -125,6 +142,16 @@ Return ONLY valid JSON, no markdown or explanation."#,
         Ok(response.content)
     }
 
+    fn fallback_plan(&self, goal: &str) -> GeneratedPlan {
+        GeneratedPlan {
+            steps: vec![PlanStep {
+                description: goal.to_string(),
+                dependencies: Vec::new(),
+                assigned_role: "worker".to_string(),
+            }],
+        }
+    }
+
     fn parse_plan_response(&self, content: &str) -> Result<GeneratedPlan> {
         let trimmed = content.trim();
 
@@ -143,7 +170,9 @@ Return ONLY valid JSON, no markdown or explanation."#,
         };
 
         serde_json::from_str(cleaned).map_err(|err| {
-            Agent1Error::InvalidModelResponse(format!("failed to parse plan JSON: {err}, content: {cleaned}"))
+            Agent1Error::InvalidModelResponse(format!(
+                "failed to parse plan JSON: {err}, content: {cleaned}"
+            ))
         })
     }
 
@@ -153,6 +182,7 @@ Return ONLY valid JSON, no markdown or explanation."#,
         generated_steps: Vec<PlanStep>,
     ) -> Result<Vec<ExecutionStep>> {
         let mut steps = Vec::new();
+        let mut pending_dependencies = Vec::new();
 
         for (index, step) in generated_steps.into_iter().enumerate() {
             let role = match step.assigned_role.as_str() {
@@ -169,28 +199,37 @@ Return ONLY valid JSON, no markdown or explanation."#,
                 }
             };
 
-            let dependencies: Vec<String> = step
-                .dependencies
-                .iter()
-                .filter_map(|d| {
-                    if let Ok(idx) = d.parse::<usize>() {
-                        if idx < index {
-                            return Some(format!("step_{}", new_id("dep").split('_').last().unwrap_or("")));
-                        }
-                    }
-                    None
-                })
-                .collect();
-
-            let mut execution_step = ExecutionStep::new(
-                plan_id.clone(),
-                step.description,
-                index,
-                dependencies,
-            );
+            let mut execution_step =
+                ExecutionStep::new(plan_id.clone(), step.description, index, Vec::new());
             execution_step.assigned_role = Some(role);
 
             steps.push(execution_step);
+            pending_dependencies.push(step.dependencies);
+        }
+
+        let step_ids = steps.iter().map(|step| step.id.clone()).collect::<Vec<_>>();
+        for (index, dependencies) in pending_dependencies.into_iter().enumerate() {
+            let resolved = dependencies
+                .into_iter()
+                .map(|dependency| {
+                    let dependency_index = dependency.parse::<usize>().map_err(|_| {
+                        Agent1Error::Config(format!(
+                            "dependency `{dependency}` is not a valid step index"
+                        ))
+                    })?;
+                    if dependency_index >= index {
+                        return Err(Agent1Error::Config(format!(
+                            "step {index} depends on non-prior step {dependency_index}"
+                        )));
+                    }
+                    step_ids.get(dependency_index).cloned().ok_or_else(|| {
+                        Agent1Error::Config(format!(
+                            "dependency index {dependency_index} is outside the plan"
+                        ))
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            steps[index].dependencies = resolved;
         }
 
         if steps.len() > self.config.max_plan_depth {

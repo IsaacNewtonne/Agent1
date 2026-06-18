@@ -1,6 +1,6 @@
 use agent1_core::{
-    ExecutionStep, OrchestrationSession, OrchestrationStatus, PlanStatus,
-    StepStatus, now, Agent1Error, Result,
+    now, Agent1Error, ExecutionStep, OrchestrationSession, OrchestrationStatus, PlanStatus, Result,
+    StepStatus,
 };
 use agent1_db::SqliteStore;
 use sqlx::Row;
@@ -43,7 +43,11 @@ impl ProgressTracker {
         Ok(())
     }
 
-    pub async fn save_plan(&self, plan: &agent1_core::ExecutionPlan, steps: &[ExecutionStep]) -> Result<()> {
+    pub async fn save_plan(
+        &self,
+        plan: &agent1_core::ExecutionPlan,
+        steps: &[ExecutionStep],
+    ) -> Result<()> {
         sqlx::query(
             r#"
             INSERT INTO execution_plans (
@@ -144,7 +148,10 @@ impl ProgressTracker {
         rows.into_iter().map(orchestration_from_row).collect()
     }
 
-    pub async fn get_plan_with_steps(&self, plan_id: &str) -> Result<(agent1_core::ExecutionPlan, Vec<ExecutionStep>)> {
+    pub async fn get_plan_with_steps(
+        &self,
+        plan_id: &str,
+    ) -> Result<(agent1_core::ExecutionPlan, Vec<ExecutionStep>)> {
         let plan_row = sqlx::query(
             r#"
             SELECT id, orchestration_id, objective, raw_goal, status, created_at, completed_at
@@ -174,17 +181,25 @@ impl ProgressTracker {
         .await
         .map_err(|err| Agent1Error::Runtime(format!("failed to get steps: {err}")))?;
 
-        let steps = step_rows.into_iter().map(step_from_row).collect::<Result<Vec<_>>>()?;
+        let steps = step_rows
+            .into_iter()
+            .map(step_from_row)
+            .collect::<Result<Vec<_>>>()?;
 
         Ok((plan, steps))
     }
 
-    pub fn calculate_progress<'a>(&self, steps: &'a [ExecutionStep]) -> (usize, usize, &'a [ExecutionStep]) {
+    pub fn calculate_progress<'a>(
+        &self,
+        steps: &'a [ExecutionStep],
+    ) -> (usize, usize, &'a [ExecutionStep]) {
         let total = steps.len();
-        let completed = steps.iter()
+        let completed = steps
+            .iter()
             .filter(|s| s.status == StepStatus::Completed)
             .count();
-        let _blocked = steps.iter()
+        let _blocked = steps
+            .iter()
             .filter(|s| s.status == StepStatus::Blocked)
             .count();
         (completed, total, steps)
@@ -195,14 +210,17 @@ impl ProgressTracker {
     }
 
     pub fn get_blocked_steps<'a>(&self, steps: &'a [ExecutionStep]) -> Vec<&'a ExecutionStep> {
-        steps.iter().filter(|s| s.status == StepStatus::Blocked).collect()
+        steps
+            .iter()
+            .filter(|s| s.status == StepStatus::Blocked)
+            .collect()
     }
 }
 
 fn orchestration_from_row(row: sqlx::sqlite::SqliteRow) -> Result<OrchestrationSession> {
     let status_text: String = row.get("status");
-    let status: OrchestrationStatus = serde_json::from_str(&status_text)
-        .unwrap_or(OrchestrationStatus::Received);
+    let status: OrchestrationStatus =
+        serde_json::from_str(&status_text).unwrap_or(OrchestrationStatus::Received);
 
     Ok(OrchestrationSession {
         id: row.get("id"),
@@ -217,8 +235,7 @@ fn orchestration_from_row(row: sqlx::sqlite::SqliteRow) -> Result<OrchestrationS
 
 fn plan_from_row(row: sqlx::sqlite::SqliteRow) -> Result<agent1_core::ExecutionPlan> {
     let status_text: String = row.get("status");
-    let status: PlanStatus = serde_json::from_str(&status_text)
-        .unwrap_or(PlanStatus::Draft);
+    let status: PlanStatus = serde_json::from_str(&status_text).unwrap_or(PlanStatus::Draft);
 
     Ok(agent1_core::ExecutionPlan {
         id: row.get("id"),
@@ -233,21 +250,18 @@ fn plan_from_row(row: sqlx::sqlite::SqliteRow) -> Result<agent1_core::ExecutionP
 
 fn step_from_row(row: sqlx::sqlite::SqliteRow) -> Result<ExecutionStep> {
     let status_text: String = row.get("status");
-    let status: StepStatus = serde_json::from_str(&status_text)
-        .unwrap_or(StepStatus::Pending);
+    let status: StepStatus = serde_json::from_str(&status_text).unwrap_or(StepStatus::Pending);
 
     let assigned_role_text: Option<String> = row.get("assigned_role");
-    let assigned_role = assigned_role_text.and_then(|r| {
-        match r.as_str() {
-            "orchestrator" => Some(agent1_core::AgentRole::Orchestrator),
-            "planner" => Some(agent1_core::AgentRole::Planner),
-            "worker" => Some(agent1_core::AgentRole::Worker),
-            "critic" => Some(agent1_core::AgentRole::Critic),
-            "researcher" => Some(agent1_core::AgentRole::Researcher),
-            "builder" => Some(agent1_core::AgentRole::Builder),
-            "reporter" => Some(agent1_core::AgentRole::Reporter),
-            _ => None,
-        }
+    let assigned_role = assigned_role_text.and_then(|r| match r.as_str() {
+        "orchestrator" => Some(agent1_core::AgentRole::Orchestrator),
+        "planner" => Some(agent1_core::AgentRole::Planner),
+        "worker" => Some(agent1_core::AgentRole::Worker),
+        "critic" => Some(agent1_core::AgentRole::Critic),
+        "researcher" => Some(agent1_core::AgentRole::Researcher),
+        "builder" => Some(agent1_core::AgentRole::Builder),
+        "reporter" => Some(agent1_core::AgentRole::Reporter),
+        _ => None,
     });
 
     let dependencies_json: String = row.get("dependencies");

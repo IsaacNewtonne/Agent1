@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::{env, path::PathBuf};
 use tokio::process::Command;
 
@@ -31,6 +31,7 @@ pub fn provider_for(config: &ModelConfig) -> Result<Box<dyn ModelProvider>> {
         "openai_compatible" | "openai-compatible" | "local_openai" => {
             Ok(Box::new(OpenAiCompatibleProvider::new()))
         }
+        "nvidia" | "nvidia_nim" | "nvidia-nim" => Ok(Box::new(NvidiaProvider::new())),
         other => Err(Agent1Error::Config(format!(
             "unsupported model provider `{other}`"
         ))),
@@ -73,7 +74,8 @@ impl ModelProvider for OpenCodeProvider {
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let content = extract_opencode_content(&stdout).unwrap_or_else(|| stdout.trim().to_string());
+        let content =
+            extract_opencode_content(&stdout).unwrap_or_else(|| stdout.trim().to_string());
         if content.is_empty() {
             return Err(Agent1Error::InvalidModelResponse(
                 "opencode returned no content".to_string(),
@@ -162,7 +164,11 @@ fn find_opencode_node_script() -> Option<PathBuf> {
 
 fn extract_opencode_content(stdout: &str) -> Option<String> {
     let mut parts = Vec::new();
-    for line in stdout.lines().map(str::trim).filter(|line| !line.is_empty()) {
+    for line in stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
         let Ok(value) = serde_json::from_str::<Value>(line) else {
             continue;
         };
@@ -390,12 +396,12 @@ impl ModelProvider for OllamaProvider {
                     ))
                 })?;
             if !packet.done {
-            if let Some(message) = packet.message {
-                if !message.content.is_empty() {
-                    chunks.push(message.content);
+                if let Some(message) = packet.message {
+                    if !message.content.is_empty() {
+                        chunks.push(message.content);
+                    }
                 }
             }
-        }
         }
         if chunks.is_empty() {
             return Err(Agent1Error::InvalidModelResponse(
@@ -448,6 +454,47 @@ impl OpenAiCompatibleProvider {
 }
 
 impl Default for OpenAiCompatibleProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub struct NvidiaProvider {
+    client: Client,
+    api_key: Option<String>,
+}
+
+impl NvidiaProvider {
+    pub fn new() -> Self {
+        Self {
+            client: Client::new(),
+            api_key: None,
+        }
+    }
+
+    fn api_key(&self) -> Result<String> {
+        self.api_key
+            .clone()
+            .or_else(|| env::var("NVIDIA_API_KEY").ok())
+            .map(|key| key.trim().to_string())
+            .filter(|key| !key.is_empty())
+            .ok_or_else(|| {
+                Agent1Error::Config(
+                    "NVIDIA NIM provider requires NVIDIA_API_KEY in the environment".to_string(),
+                )
+            })
+    }
+
+    #[cfg(test)]
+    fn with_api_key(api_key: impl Into<String>) -> Self {
+        Self {
+            client: Client::new(),
+            api_key: Some(api_key.into()),
+        }
+    }
+}
+
+impl Default for NvidiaProvider {
     fn default() -> Self {
         Self::new()
     }
@@ -551,14 +598,16 @@ impl ModelProvider for OpenAiCompatibleProvider {
                         Ok(c) => c,
                         Err(_) => continue,
                     };
-                    let Some(choice) = chunk.choices.into_iter().next() else { continue };
-                        if choice.finish_reason.is_none() {
-                            if let Some(content) = choice.delta.content {
-                                if !content.is_empty() {
-                                    chunks.push(content);
-                                }
+                    let Some(choice) = chunk.choices.into_iter().next() else {
+                        continue;
+                    };
+                    if choice.finish_reason.is_none() {
+                        if let Some(content) = choice.delta.content {
+                            if !content.is_empty() {
+                                chunks.push(content);
                             }
                         }
+                    }
                 }
             }
         }
@@ -593,6 +642,138 @@ impl ModelProvider for OpenAiCompatibleProvider {
             .into_iter()
             .map(|model| ModelInfo {
                 provider: "openai_compatible".to_string(),
+                name: model.id,
+            })
+            .collect())
+    }
+}
+
+#[async_trait]
+impl ModelProvider for NvidiaProvider {
+    async fn chat(&self, request: ChatRequest) -> Result<ChatResponse> {
+        let base_url = request
+            .model
+            .base_url
+            .clone()
+            .unwrap_or_else(|| "https://integrate.api.nvidia.com/v1".to_string());
+        let response = self
+            .client
+            .post(format!("{base_url}/chat/completions"))
+            .bearer_auth(self.api_key()?)
+            .json(&OpenAiChatRequest {
+                model: request.model.model,
+                messages: request.messages,
+                temperature: Some(request.model.temperature as f64),
+                max_tokens: request.model.max_tokens.map(|m| m as i64),
+                stream: None,
+            })
+            .send()
+            .await
+            .map_err(|err| map_request_error("NVIDIA NIM chat request", err))?
+            .error_for_status()
+            .map_err(|err| {
+                Agent1Error::Runtime(format!("NVIDIA NIM chat returned an error: {err}"))
+            })?;
+        let body: OpenAiChatResponse = response.json().await.map_err(|err| {
+            Agent1Error::InvalidModelResponse(format!("NVIDIA NIM response was not JSON: {err}"))
+        })?;
+        let content = body
+            .choices
+            .into_iter()
+            .next()
+            .map(|choice| choice.message.content)
+            .ok_or_else(|| {
+                Agent1Error::InvalidModelResponse("missing choices[0].message.content".to_string())
+            })?;
+        Ok(ChatResponse { content })
+    }
+
+    async fn chat_stream(&self, request: ChatRequest) -> Result<ChatStreamResponse> {
+        let base_url = request
+            .model
+            .base_url
+            .clone()
+            .unwrap_or_else(|| "https://integrate.api.nvidia.com/v1".to_string());
+        let response = self
+            .client
+            .post(format!("{base_url}/chat/completions"))
+            .bearer_auth(self.api_key()?)
+            .json(&OpenAiChatRequest {
+                model: request.model.model,
+                messages: request.messages,
+                temperature: Some(request.model.temperature as f64),
+                max_tokens: request.model.max_tokens.map(|m| m as i64),
+                stream: Some(true),
+            })
+            .send()
+            .await
+            .map_err(|err| map_request_error("NVIDIA NIM chat stream request", err))?
+            .error_for_status()
+            .map_err(|err| {
+                Agent1Error::Runtime(format!("NVIDIA NIM stream returned an error: {err}"))
+            })?;
+        let mut stream = response.bytes_stream();
+        let mut pending = String::new();
+        let mut chunks = Vec::new();
+        while let Some(item) = stream.next().await {
+            let bytes = item.map_err(|err| {
+                Agent1Error::Runtime(format!("NVIDIA NIM stream read failed: {err}"))
+            })?;
+            pending.push_str(&String::from_utf8_lossy(&bytes));
+            while let Some(index) = pending.find('\n') {
+                let line = pending[..index].trim().to_string();
+                pending = pending[index + 1..].to_string();
+                if line.is_empty() || line == "data: [DONE]" {
+                    continue;
+                }
+                if let Some(data) = line.strip_prefix("data: ") {
+                    let chunk: OpenAiStreamChunk = match serde_json::from_str(data) {
+                        Ok(c) => c,
+                        Err(_) => continue,
+                    };
+                    let Some(choice) = chunk.choices.into_iter().next() else {
+                        continue;
+                    };
+                    if choice.finish_reason.is_none() {
+                        if let Some(content) = choice.delta.content {
+                            if !content.is_empty() {
+                                chunks.push(content);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let content = chunks.join("");
+        Ok(ChatStreamResponse { content, chunks })
+    }
+
+    async fn list_models(&self, config: &ModelConfig) -> Result<Vec<ModelInfo>> {
+        let base_url = config
+            .base_url
+            .clone()
+            .unwrap_or_else(|| "https://integrate.api.nvidia.com/v1".to_string());
+        let response = self
+            .client
+            .get(format!("{base_url}/models"))
+            .bearer_auth(self.api_key()?)
+            .send()
+            .await
+            .map_err(|err| map_request_error("NVIDIA NIM list models request", err))?
+            .error_for_status()
+            .map_err(|err| {
+                Agent1Error::Runtime(format!("NVIDIA NIM list models returned an error: {err}"))
+            })?;
+        let body: OpenAiModelsResponse = response.json().await.map_err(|err| {
+            Agent1Error::InvalidModelResponse(format!(
+                "NVIDIA NIM models response was not JSON: {err}"
+            ))
+        })?;
+        Ok(body
+            .data
+            .into_iter()
+            .map(|model| ModelInfo {
+                provider: "nvidia".to_string(),
                 name: model.id,
             })
             .collect())
@@ -871,6 +1052,65 @@ mod tests {
             .await
             .expect("openai-compatible chat should succeed");
         assert_eq!(response.content, "openai-compatible ok");
+        server.await.expect("server task");
+    }
+
+    #[tokio::test]
+    async fn nvidia_mock_endpoint_uses_bearer_auth() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind nvidia mock");
+        let addr = listener.local_addr().expect("nvidia addr");
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().await.expect("accept nvidia request");
+                let mut buffer = vec![0_u8; 16 * 1024];
+                let read = stream.read(&mut buffer).await.expect("read nvidia request");
+                let request = String::from_utf8_lossy(&buffer[..read]).to_string();
+                assert!(request
+                    .to_ascii_lowercase()
+                    .contains("authorization: bearer test-nvidia-key"));
+                let body = if request.starts_with("GET /v1/models HTTP/1.1") {
+                    r#"{"data":[{"id":"nvidia/llama-3.1-nemotron-ultra-253b-v1"}]}"#
+                } else {
+                    assert!(request.starts_with("POST /v1/chat/completions HTTP/1.1"));
+                    r#"{"choices":[{"message":{"content":"nvidia ok"}}]}"#
+                };
+                let response = http_json_response(200, body);
+                stream
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("write nvidia response");
+            }
+        });
+        let provider = NvidiaProvider::with_api_key("test-nvidia-key");
+        let config = ModelConfig {
+            provider: "nvidia".to_string(),
+            model: "nvidia/llama-3.1-nemotron-ultra-253b-v1".to_string(),
+            base_url: Some(format!("http://{addr}/v1")),
+            context_window: 8192,
+            temperature: 0.2,
+            top_p: None,
+            max_tokens: None,
+        };
+        let models = provider
+            .list_models(&config)
+            .await
+            .expect("nvidia list models should succeed");
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].provider, "nvidia");
+        assert_eq!(models[0].name, "nvidia/llama-3.1-nemotron-ultra-253b-v1");
+        let response = provider
+            .chat(ChatRequest {
+                model: config,
+                messages: vec![ChatMessage {
+                    role: "user".to_string(),
+                    content: "hello".to_string(),
+                }],
+            })
+            .await
+            .expect("nvidia chat should succeed");
+        assert_eq!(response.content, "nvidia ok");
         server.await.expect("server task");
     }
 }

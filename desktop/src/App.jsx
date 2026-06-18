@@ -603,8 +603,9 @@ export default function App() {
       opencode: "OpenCode",
       ollama: "Ollama",
       openai_compatible: "OpenAI-compatible",
+      nvidia: "NVIDIA NIM",
     };
-    const fallback = ["opencode", "ollama", "openai_compatible"].map((provider) => ({
+    const fallback = ["opencode", "ollama", "openai_compatible", "nvidia"].map((provider) => ({
       provider,
       label: labels[provider] || provider,
       models: [],

@@ -160,11 +160,15 @@ export default function useCollaboration(apiBase) {
     ws.addEventListener("message", (event) => {
       try {
         const data = JSON.parse(event.data);
-        if (data.event_type) {
-          setRecentEvents((prev) => [data, ...prev].slice(0, 30));
+        const runtimeEvent = data.type === "event" && data.event ? data.event : data;
+        if (runtimeEvent.event_type) {
+          setRecentEvents((prev) => {
+            if (prev.some((item) => item.id === runtimeEvent.id)) return prev;
+            return [runtimeEvent, ...prev].slice(0, 30);
+          });
         }
         // Auto-refresh on important events with throttling to prevent refresh storms.
-        if (["SessionStarted", "FinalAnswer", "ToolCallCompleted", "Error"].includes(data.event_type)) {
+        if (["SessionStarted", "FinalAnswer", "ToolCallCompleted", "Error"].includes(runtimeEvent.event_type)) {
           const now = Date.now();
           if (now - lastRefreshAtRef.current > 700) {
             refreshAll();
@@ -265,10 +269,10 @@ export default function useCollaboration(apiBase) {
 
   const approveAction = useCallback(async (approvalId, approved) => {
     try {
-      await fetchJson(`/api/approvals/${encodeURIComponent(approvalId)}`, {
+      await fetchJson(`/api/tool-approvals/${encodeURIComponent(approvalId)}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ approved }),
+        body: JSON.stringify({ decision: approved ? "approved" : "denied" }),
       });
       await refreshAll();
     } catch (error) {

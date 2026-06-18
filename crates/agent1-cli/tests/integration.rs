@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod integration {
-    use agent1_core::{Agent, MemoryItem, ModelConfig, PermissionPolicy, new_id};
+    use agent1_core::{new_id, Agent, MemoryItem, ModelConfig, PermissionPolicy};
     use agent1_db::SqliteStore;
     use std::path::PathBuf;
     use tempfile::NamedTempFile;

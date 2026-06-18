@@ -1,7 +1,7 @@
 pub use agent1_core::{
-    AgentId, AgentRole, EscalationId, EscalationRecord, EscalationStatus, EscalationType, ExecutionPlan,
-    ExecutionStep, OrchestrationId, OrchestrationSession, OrchestrationStatus, PlanId,
-    PlanStatus, StepId, StepStatus, new_id, now, Agent1Error, Result,
+    new_id, now, Agent1Error, AgentId, AgentRole, EscalationId, EscalationRecord, EscalationStatus,
+    EscalationType, ExecutionPlan, ExecutionStep, OrchestrationId, OrchestrationSession,
+    OrchestrationStatus, PlanId, PlanStatus, Result, StepId, StepStatus,
 };
 use serde::{Deserialize, Serialize};
 
@@ -56,24 +56,57 @@ pub struct PlanView {
 pub fn check_escalation_triggers(content: &str) -> Option<(EscalationType, String)> {
     let content_lower = content.to_lowercase();
 
-    let security_triggers = ["api_key", "apikey", "secret", "password", "token", "authorization"];
+    let security_triggers = [
+        "api_key",
+        "apikey",
+        "secret",
+        "password",
+        "token",
+        "authorization",
+    ];
     if security_triggers.iter().any(|t| content_lower.contains(t)) {
-        return Some((EscalationType::Security, "Operation involves security-sensitive data".to_string()));
+        return Some((
+            EscalationType::Security,
+            "Operation involves security-sensitive data".to_string(),
+        ));
     }
 
-    let finance_triggers = ["payment", "billing", "purchase", "subscription", "invoice", "refund"];
+    let finance_triggers = [
+        "payment",
+        "billing",
+        "purchase",
+        "subscription",
+        "invoice",
+        "refund",
+    ];
     if finance_triggers.iter().any(|t| content_lower.contains(t)) {
-        return Some((EscalationType::Finance, "Operation involves financial transaction".to_string()));
+        return Some((
+            EscalationType::Finance,
+            "Operation involves financial transaction".to_string(),
+        ));
     }
 
-    let access_triggers = ["oauth", "connect_account", "authentication", "login"];
+    let access_triggers = [
+        "oauth",
+        "connect_account",
+        "authentication",
+        "login",
+        "connect to my",
+        "account access",
+    ];
     if access_triggers.iter().any(|t| content_lower.contains(t)) {
-        return Some((EscalationType::Access, "Operation requires account access".to_string()));
+        return Some((
+            EscalationType::Access,
+            "Operation requires account access".to_string(),
+        ));
     }
 
     let identity_triggers = ["email", "phone", "send_sms", "send_email"];
     if identity_triggers.iter().any(|t| content_lower.contains(t)) {
-        return Some((EscalationType::Identity, "Operation involves personal identity data".to_string()));
+        return Some((
+            EscalationType::Identity,
+            "Operation involves personal identity data".to_string(),
+        ));
     }
 
     None

@@ -94,7 +94,8 @@ impl WhatsAppService {
     }
 
     pub async fn get_status(&self) -> Result<WhatsAppStatus> {
-        let resp = self.http
+        let resp = self
+            .http
             .get(format!("{}/status", SIDECAR_BASE))
             .timeout(std::time::Duration::from_secs(5))
             .send()
@@ -123,19 +124,18 @@ impl WhatsAppService {
                     error: Some(format!("WhatsApp sidecar returned HTTP {}", r.status())),
                 })
             }
-            Err(_) => {
-                Ok(WhatsAppStatus {
-                    state: "sidecar_offline".to_string(),
-                    phone: None,
-                    qr: None,
-                    error: Some("WhatsApp sidecar is not reachable on 127.0.0.1:17372".to_string()),
-                })
-            }
+            Err(_) => Ok(WhatsAppStatus {
+                state: "sidecar_offline".to_string(),
+                phone: None,
+                qr: None,
+                error: Some("WhatsApp sidecar is not reachable on 127.0.0.1:17372".to_string()),
+            }),
         }
     }
 
     pub async fn get_qr_svg(&self) -> Result<Option<String>> {
-        let resp = self.http
+        let resp = self
+            .http
             .get(format!("{}/qrsvg", SIDECAR_BASE))
             .timeout(std::time::Duration::from_secs(5))
             .send()
@@ -151,7 +151,8 @@ impl WhatsAppService {
     }
 
     pub async fn connect(&self) -> Result<()> {
-        let resp = self.http
+        let resp = self
+            .http
             .post(format!("{}/connect", SIDECAR_BASE))
             .timeout(std::time::Duration::from_secs(10))
             .send()
@@ -202,7 +203,8 @@ impl WhatsAppService {
     }
 
     pub async fn send_message(&self, to: &str, text: &str) -> Result<SendMessageResponse> {
-        let resp = self.http
+        let resp = self
+            .http
             .post(format!("{}/send", SIDECAR_BASE))
             .json(&SendMessageRequest {
                 to: to.to_string(),
@@ -217,7 +219,8 @@ impl WhatsAppService {
     }
 
     pub async fn send_notification(&self, title: &str, body: &str) -> Result<()> {
-        let resp = self.http
+        let resp = self
+            .http
             .post(format!("{}/notify", SIDECAR_BASE))
             .json(&NotifyRequest {
                 title: title.to_string(),
@@ -236,7 +239,8 @@ impl WhatsAppService {
     }
 
     pub async fn send_approval(&self, message: &str) -> Result<()> {
-        let resp = self.http
+        let resp = self
+            .http
             .post(format!("{}/approve", SIDECAR_BASE))
             .json(&serde_json::json!({ "message": message }))
             .timeout(std::time::Duration::from_secs(30))
@@ -253,15 +257,20 @@ impl WhatsAppService {
 
     pub async fn handle_incoming_command(&self, text: &str) -> Result<()> {
         self.pending_commands
-            .send(IncomingCommand { text: text.to_string() })
+            .send(IncomingCommand {
+                text: text.to_string(),
+            })
             .await?;
         Ok(())
     }
 
     pub async fn send_command_to_sidecar(&self, text: &str) -> Result<()> {
-        let resp = self.http
+        let resp = self
+            .http
             .post(format!("{}/command", SIDECAR_BASE))
-            .json(&CommandRequest { text: text.to_string() })
+            .json(&CommandRequest {
+                text: text.to_string(),
+            })
             .timeout(std::time::Duration::from_secs(5))
             .send()
             .await?;
@@ -293,7 +302,9 @@ impl WhatsAppService {
                 if let Ok(Some(svg)) = self.get_qr_svg().await {
                     let current = self.status.read().await;
                     if current.qr.is_none() {
-                        let _ = self.event_tx.send(WhatsAppEvent::QrReceived { qr_svg: svg });
+                        let _ = self
+                            .event_tx
+                            .send(WhatsAppEvent::QrReceived { qr_svg: svg });
                     }
                 }
             }
@@ -333,7 +344,7 @@ mod tests {
     #[test]
     fn test_whatsapp_service_creation() {
         let service = super::WhatsAppService::new();
-        assert!(!service.event_tx.is_closed());
+        assert_eq!(service.event_tx.receiver_count(), 0);
     }
 
     #[tokio::test]
