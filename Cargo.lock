@@ -10,6 +10,7 @@ dependencies = [
  "agent1-core",
  "agent1-db",
  "agent1-gateway",
+ "agent1-memory",
  "agent1-models",
  "agent1-orchestrator",
  "agent1-runtime",

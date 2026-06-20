@@ -15,6 +15,7 @@ use agent1_core::{
 use agent1_core::{AuthorType, CollaborationMode, ExternalPermissions};
 use agent1_db::SqliteStore;
 use agent1_gateway::{ExternalGateway, GatewayMessage};
+use agent1_memory::{SemanticMemoryStore, MemoryProvider};
 use agent1_models::provider_for;
 use agent1_orchestrator::{run_orchestration, ProgressTracker};
 use agent1_runtime::{
@@ -1084,7 +1085,7 @@ async fn run_server(bind: String, db: PathBuf, api_token: Option<String>) -> any
             "server bind must be loopback for MVP; use 127.0.0.1:PORT"
         ));
     }
-    let store = SqliteStore::connect(db).await?;
+    let store = SqliteStore::connect(db.clone()).await?;
     reconcile_interrupted_sessions(&store).await?;
     let approval_broker = Arc::new(ApprovalBroker::default());
     let active_runs = Arc::new(ActiveRunRegistry::default());
@@ -1097,6 +1098,51 @@ async fn run_server(bind: String, db: PathBuf, api_token: Option<String>) -> any
         loop {
             sleep(Duration::from_secs(30)).await;
             gw_clone.cleanup_stale_connections().await;
+        }
+    });
+
+    // Start memory consolidation task
+    let memory_db_path = db.with_extension("memory.db");
+    tokio::spawn(async move {
+        let model_config = ModelConfig {
+            provider: std::env::var("AGENT1_MODEL_CONSOLIDATION_PROVIDER")
+                .or_else(|_| std::env::var("AGENT1_MODEL_DEFAULT_PROVIDER"))
+                .unwrap_or_else(|_| "ollama".to_string()),
+            model: std::env::var("AGENT1_MODEL_CONSOLIDATION")
+                .or_else(|_| std::env::var("AGENT1_MODEL_DEFAULT"))
+                .unwrap_or_else(|_| "llama3.1:8b".to_string()),
+            base_url: std::env::var("AGENT1_MODEL_CONSOLIDATION_BASE_URL")
+                .or_else(|_| std::env::var("AGENT1_MODEL_DEFAULT_BASE_URL"))
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
+            context_window: std::env::var("AGENT1_MODEL_CONSOLIDATION_CONTEXT")
+                .or_else(|_| std::env::var("AGENT1_MODEL_DEFAULT_CONTEXT"))
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(8192),
+            temperature: 0.0,
+            top_p: None,
+            max_tokens: None,
+        };
+        loop {
+            sleep(Duration::from_secs(3600)).await;
+            match SemanticMemoryStore::connect(&memory_db_path).await {
+                Ok(memory_store) => {
+                    match memory_store.consolidate(&model_config).await {
+                        Ok(count) => {
+                            if count > 0 {
+                                tracing::info!("Memory consolidation completed: {} memories consolidated", count);
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("Memory consolidation failed: {}", e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to connect to memory store for consolidation: {}", e);
+                }
+            }
         }
     });
 
@@ -1734,13 +1780,26 @@ async fn api_suggestions_update(
     headers: HeaderMap,
 ) -> Result<Response<Body>, ApiError> {
     require_auth(&headers, &state)?;
-    let new_status = match action.as_str() {
-        "accept" => agent1_core::SuggestionStatus::Accepted,
-        "dismiss" => agent1_core::SuggestionStatus::Dismissed,
-        "expire" => agent1_core::SuggestionStatus::Expired,
+    let (new_status, event_type) = match action.as_str() {
+        "accept" => (agent1_core::SuggestionStatus::Accepted, Some(agent1_core::EventType::SuggestionAccepted)),
+        "dismiss" => (agent1_core::SuggestionStatus::Dismissed, Some(agent1_core::EventType::SuggestionDismissed)),
+        "expire" => (agent1_core::SuggestionStatus::Expired, None),
         _ => return Err(ApiError::bad_request("invalid action, use accept/dismiss/expire")),
     };
     state.store.update_suggestion_status(&id, new_status.clone()).await?;
+
+    if let Some(evt_type) = event_type {
+        let event = agent1_core::RuntimeEvent {
+            id: agent1_core::new_id("evt"),
+            session_id: None,
+            agent_id: None,
+            event_type: evt_type,
+            payload: serde_json::json!({"suggestion_id": id, "status": new_status.to_string()}),
+            created_at: agent1_core::now(),
+        };
+        state.store.save_event(&event).await?;
+    }
+
     Ok(json_ok(json!({"ok": true, "id": id, "status": new_status.to_string()})))
 }
 

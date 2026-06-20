@@ -56,6 +56,8 @@ export function MemoryPanel({ apiBase, currentAgentId }) {
   useEffect(() => {
     if (activeTab === "suggestions") {
       loadSuggestions();
+      const interval = setInterval(loadSuggestions, 30000);
+      return () => clearInterval(interval);
     }
   }, [activeTab, loadSuggestions]);
 
@@ -345,33 +347,36 @@ export function MemoryPanel({ apiBase, currentAgentId }) {
                     <span
                       style={{
                         display: "inline-block",
-                        padding: "1px 4px",
-                        borderRadius: "3px",
-                        fontSize: "8px",
+                        padding: "2px 6px",
+                        borderRadius: "4px",
+                        fontSize: "9px",
+                        fontWeight: "600",
                         background: `${getSuggestionTypeColor(sug.suggestion_type)}22`,
                         color: getSuggestionTypeColor(sug.suggestion_type),
-                        marginRight: "4px",
+                        marginRight: "6px",
                         textTransform: "uppercase",
+                        letterSpacing: "0.03em",
                       }}
                     >
                       {sug.suggestion_type.replace("_", " ")}
                     </span>
-                    <span style={{ color: "var(--text-secondary)", fontSize: "9px" }}>
+                    <span style={{ color: "var(--text-secondary)", fontSize: "10px" }}>
                       {formatDate(sug.created_at)}
                     </span>
                   </div>
-                  <div style={{ color: "var(--text-primary)", marginBottom: "8px", lineHeight: "1.4" }}>
+                  <div style={{ color: "var(--text-primary)", marginBottom: "8px", lineHeight: "1.4", fontSize: "12px" }}>
                     {sug.content}
                   </div>
                   {sug.trigger_context && (
                     <div
                       style={{
-                        fontSize: "9px",
+                        fontSize: "10px",
                         color: "var(--text-secondary)",
                         marginBottom: "8px",
-                        padding: "4px",
+                        padding: "6px",
                         background: "var(--surface-1)",
-                        borderRadius: "3px",
+                        borderRadius: "4px",
+                        lineHeight: "1.4",
                       }}
                     >
                       {sug.trigger_context}

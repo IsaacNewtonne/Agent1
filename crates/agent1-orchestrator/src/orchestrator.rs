@@ -154,7 +154,7 @@ impl Orchestrator {
             .await;
 
         // Generate suggestions based on the execution
-        self.generate_suggestions(&completed_plan, &completed_steps)
+        self.generate_suggestions(&completed_plan, &completed_steps, &session.id)
             .await;
 
         Ok(OrchestrateResponse {
@@ -241,7 +241,7 @@ impl Orchestrator {
         }
     }
 
-    async fn generate_suggestions(&self, plan: &agent1_core::ExecutionPlan, steps: &[ExecutionStep]) {
+    async fn generate_suggestions(&self, plan: &agent1_core::ExecutionPlan, steps: &[ExecutionStep], session_id: &str) {
         let Some(ref memory) = self.memory else {
             return;
         };
@@ -267,6 +267,7 @@ impl Orchestrator {
                 tracing::warn!("Failed to store suggestion: {}", e);
             } else {
                 tracing::debug!("Generated follow-up suggestion for failed step: {}", step.id);
+                let _ = self.emit(session_id, None, EventType::SuggestionCreated, json!({"suggestion": suggestion}));
             }
         }
 
@@ -284,7 +285,221 @@ impl Orchestrator {
                     tracing::warn!("Failed to store suggestion: {}", e);
                 } else {
                     tracing::debug!("Generated follow-up suggestion for incomplete plan: {}", plan.id);
+                    let _ = self.emit(session_id, None, EventType::SuggestionCreated, json!({"suggestion": suggestion}));
                 }
+            }
+        }
+
+        self.generate_improvement_suggestions(memory, plan, steps, session_id).await;
+        self.generate_routine_suggestions(memory, plan, steps, session_id).await;
+        self.generate_contextual_suggestions(memory, plan, steps, session_id).await;
+    }
+
+    async fn generate_improvement_suggestions(
+        &self,
+        memory: &agent1_memory::SemanticMemoryStore,
+        plan: &agent1_core::ExecutionPlan,
+        steps: &[ExecutionStep],
+        session_id: &str,
+    ) {
+        let completed_steps: Vec<_> = steps
+            .iter()
+            .filter(|s| s.status == StepStatus::Completed)
+            .collect();
+
+        if completed_steps.len() <= 1 {
+            return;
+        }
+
+        let step_descriptions: String = completed_steps
+            .iter()
+            .take(5)
+            .map(|s| s.description.as_str())
+            .collect::<Vec<_>>()
+            .join("; ");
+
+        if completed_steps.len() >= 3 {
+            let suggestion = agent1_core::Suggestion::new(
+                agent1_core::SuggestionType::Improvement,
+                format!("Optimize workflow for: {}", plan.objective.chars().take(50).collect::<String>()),
+                format!("This plan executed {} steps: {}. Consider caching intermediate results or parallelizing independent steps for faster execution.", completed_steps.len(), step_descriptions),
+                None,
+            );
+
+            if let Err(e) = memory.store_suggestion(&suggestion).await {
+                tracing::warn!("Failed to store improvement suggestion: {}", e);
+            } else {
+                tracing::debug!("Generated improvement suggestion for plan: {}", plan.id);
+                let _ = self.emit(session_id, None, EventType::SuggestionCreated, json!({"suggestion": suggestion}));
+            }
+        }
+
+        let long_steps: Vec<_> = completed_steps
+            .iter()
+            .filter(|s| {
+                if let (Some(start), Some(end)) = (s.started_at, s.completed_at) {
+                    let duration = end.signed_duration_since(start);
+                    duration.num_seconds() > 120
+                } else {
+                    false
+                }
+            })
+            .collect();
+
+        if long_steps.len() >= 2 {
+            let slow_descriptions: String = long_steps
+                .iter()
+                .map(|s| s.description.as_str())
+                .take(3)
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            let suggestion = agent1_core::Suggestion::new(
+                agent1_core::SuggestionType::Improvement,
+                format!("Speed up slow steps: {}", slow_descriptions.chars().take(40).collect::<String>()),
+                format!("{} steps took over 2 minutes each. Consider using faster models, caching context, or breaking these steps into smaller sub-tasks.", long_steps.len()),
+                None,
+            );
+
+            if let Err(e) = memory.store_suggestion(&suggestion).await {
+                tracing::warn!("Failed to store speed improvement suggestion: {}", e);
+            } else {
+                let _ = self.emit(session_id, None, EventType::SuggestionCreated, json!({"suggestion": suggestion}));
+            }
+        }
+    }
+
+    async fn generate_routine_suggestions(
+        &self,
+        memory: &agent1_memory::SemanticMemoryStore,
+        _plan: &agent1_core::ExecutionPlan,
+        _steps: &[ExecutionStep],
+        session_id: &str,
+    ) {
+        let task_memories = match memory.list(Some(agent1_memory::MemoryType::Task), 20).await {
+            Ok(mems) => mems,
+            Err(e) => {
+                tracing::warn!("Failed to list task memories for routine suggestions: {}", e);
+                return;
+            }
+        };
+
+        if task_memories.len() < 3 {
+            return;
+        }
+
+        let recent_task_count = task_memories
+            .iter()
+            .filter(|m| {
+                let age = chrono::Utc::now() - m.created_at;
+                age.num_days() < 7
+            })
+            .count();
+
+        if recent_task_count >= 3 {
+            let task_summary: String = task_memories
+                .iter()
+                .take(5)
+                .map(|m| m.content.as_str())
+                .collect::<Vec<_>>()
+                .join(" | ");
+
+            let suggestion = agent1_core::Suggestion::new(
+                agent1_core::SuggestionType::Routine,
+                "Establish routine for recurring tasks".to_string(),
+                format!("Detected {} similar tasks in the past week suggesting a pattern. Consider creating a routine agent or template for: {}", recent_task_count, task_summary.chars().take(100).collect::<String>()),
+                None,
+            );
+
+            if let Err(e) = memory.store_suggestion(&suggestion).await {
+                tracing::warn!("Failed to store routine suggestion: {}", e);
+            } else {
+                tracing::debug!("Generated routine suggestion based on {} recent tasks", recent_task_count);
+                let _ = self.emit(session_id, None, EventType::SuggestionCreated, json!({"suggestion": suggestion}));
+            }
+        }
+
+        let pattern_keywords = ["build", "test", "deploy", "review", "analyze"];
+        let mut keyword_counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+
+        for mem in &task_memories {
+            let content_lower = mem.content.to_lowercase();
+            for keyword in &pattern_keywords {
+                if content_lower.contains(keyword) {
+                    *keyword_counts.entry(keyword).or_insert(0) += 1;
+                }
+            }
+        }
+
+        if let Some((most_common, _)) = keyword_counts.iter().max_by_key(|(_, count)| *count) {
+            if *keyword_counts.get(most_common).unwrap_or(&0) >= 3 {
+                let suggestion = agent1_core::Suggestion::new(
+                    agent1_core::SuggestionType::Routine,
+                    format!("Create {} workflow template", most_common),
+                    format!("'{}' appears in {} recent tasks. Creating a reusable workflow template could save time.", most_common, keyword_counts.get(most_common).unwrap()),
+                    None,
+                );
+
+                if let Err(e) = memory.store_suggestion(&suggestion).await {
+                    tracing::warn!("Failed to store {} routine suggestion: {}", most_common, e);
+                } else {
+                    let _ = self.emit(session_id, None, EventType::SuggestionCreated, json!({"suggestion": suggestion}));
+                }
+            }
+        }
+    }
+
+    async fn generate_contextual_suggestions(
+        &self,
+        memory: &agent1_memory::SemanticMemoryStore,
+        plan: &agent1_core::ExecutionPlan,
+        _steps: &[ExecutionStep],
+        session_id: &str,
+    ) {
+        let query = agent1_memory::MemorySearchQuery {
+            query: plan.objective.clone(),
+            memory_type: None,
+            limit: 3,
+            min_relevance: 0.5,
+        };
+
+        let related_results = match memory.search(query).await {
+            Ok(results) => results,
+            Err(e) => {
+                tracing::warn!("Failed to search for related memories: {}", e);
+                return;
+            }
+        };
+
+        if related_results.is_empty() {
+            return;
+        }
+
+        let related_summary: String = related_results
+            .iter()
+            .take(3)
+            .map(|r| r.entry.content.as_str())
+            .collect::<Vec<_>>()
+            .join(" | ");
+
+        let similarity_avg: f32 = related_results
+            .iter()
+            .map(|r| r.similarity)
+            .sum::<f32>() / related_results.len() as f32;
+
+        if similarity_avg > 0.7 {
+            let suggestion = agent1_core::Suggestion::new(
+                agent1_core::SuggestionType::Contextual,
+                format!("Building on past work: {}", plan.objective.chars().take(40).collect::<String>()),
+                format!("Found {} related memories with high similarity ({:.1}%): {}", related_results.len(), similarity_avg * 100.0, related_summary.chars().take(150).collect::<String>()),
+                Some(related_results.first().map(|r| r.entry.id.clone()).unwrap_or_default()),
+            );
+
+            if let Err(e) = memory.store_suggestion(&suggestion).await {
+                tracing::warn!("Failed to store contextual suggestion: {}", e);
+            } else {
+                tracing::debug!("Generated contextual suggestion with {} related memories", related_results.len());
+                let _ = self.emit(session_id, None, EventType::SuggestionCreated, json!({"suggestion": suggestion}));
             }
         }
     }

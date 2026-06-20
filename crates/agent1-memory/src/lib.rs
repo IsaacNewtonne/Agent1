@@ -241,7 +241,8 @@ impl SemanticMemoryStore {
                     LIMIT ?
                     "#,
                 )
-                .bind(&status_filter)
+                .bind(status_filter.as_deref().unwrap_or("pending"))
+                .bind(limit as i64)
                 .fetch_all(&self.pool)
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to get suggestions: {}", e))?
@@ -671,6 +672,7 @@ pub fn create_memory_entry(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent1_core::SuggestionType;
 
     #[test]
     fn test_cosine_similarity() {
@@ -722,5 +724,307 @@ mod tests {
         for (o, r) in original.iter().zip(recovered.iter()) {
             assert!((o - r).abs() < 0.001);
         }
+    }
+
+    #[tokio::test]
+    async fn test_store_and_retrieve_memory() {
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        let path = temp.path();
+        let store = SemanticMemoryStore::connect(path).await.unwrap();
+
+        let entry = create_memory_entry(
+            "Test memory content".to_string(),
+            vec![0.1, 0.2, 0.3, 0.4],
+            MemoryType::Fact,
+            0.8,
+        );
+
+        store.store(entry.clone()).await.unwrap();
+
+        let retrieved = store.retrieve(&entry.id).await.unwrap();
+        assert!(retrieved.is_some());
+        let retrieved = retrieved.unwrap();
+        assert_eq!(retrieved.content, "Test memory content");
+        assert_eq!(retrieved.memory_type, MemoryType::Fact);
+        assert!((retrieved.importance - 0.8).abs() < 0.001);
+    }
+
+    #[tokio::test]
+    async fn test_store_and_list_memories() {
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        let path = temp.path();
+        let store = SemanticMemoryStore::connect(path).await.unwrap();
+
+        let entry1 = create_memory_entry(
+            "First memory".to_string(),
+            vec![0.1, 0.2, 0.3],
+            MemoryType::Fact,
+            0.6,
+        );
+        let entry2 = create_memory_entry(
+            "Second memory".to_string(),
+            vec![0.4, 0.5, 0.6],
+            MemoryType::Preference,
+            0.9,
+        );
+
+        store.store(entry1).await.unwrap();
+        store.store(entry2).await.unwrap();
+
+        let all_memories = store.list(None, 10).await.unwrap();
+        assert_eq!(all_memories.len(), 2);
+
+        let fact_memories = store.list(Some(MemoryType::Fact), 10).await.unwrap();
+        assert_eq!(fact_memories.len(), 1);
+        assert_eq!(fact_memories[0].memory_type, MemoryType::Fact);
+    }
+
+    #[tokio::test]
+    async fn test_delete_memory() {
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        let path = temp.path();
+        let store = SemanticMemoryStore::connect(path).await.unwrap();
+
+        let entry = create_memory_entry(
+            "Memory to delete".to_string(),
+            vec![0.1, 0.2, 0.3],
+            MemoryType::Task,
+            0.5,
+        );
+
+        store.store(entry.clone()).await.unwrap();
+        let memories = store.list(None, 10).await.unwrap();
+        assert_eq!(memories.len(), 1);
+
+        store.delete(&entry.id).await.unwrap();
+        let memories = store.list(None, 10).await.unwrap();
+        assert!(memories.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_update_access() {
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        let path = temp.path();
+        let store = SemanticMemoryStore::connect(path).await.unwrap();
+
+        let entry = create_memory_entry(
+            "Access test memory".to_string(),
+            vec![0.1, 0.2, 0.3],
+            MemoryType::Conversation,
+            0.5,
+        );
+
+        store.store(entry.clone()).await.unwrap();
+        let before = store.retrieve(&entry.id).await.unwrap().unwrap();
+        assert_eq!(before.access_count, 0);
+
+        store.update_access(&entry.id).await.unwrap();
+        let after = store.retrieve(&entry.id).await.unwrap().unwrap();
+        assert_eq!(after.access_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_suggestion_crud() {
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        let path = temp.path();
+        let store = SemanticMemoryStore::connect(path).await.unwrap();
+
+        let suggestion = Suggestion::new(
+            SuggestionType::FollowUp,
+            "Test suggestion content".to_string(),
+            "Trigger context".to_string(),
+            None,
+        );
+
+        store.store_suggestion(&suggestion).await.unwrap();
+
+        let suggestions = store.get_suggestions(None, 10).await.unwrap();
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].content, "Test suggestion content");
+        assert_eq!(suggestions[0].suggestion_type, SuggestionType::FollowUp);
+        assert_eq!(suggestions[0].status, SuggestionStatus::Pending);
+    }
+
+    #[tokio::test]
+    async fn test_suggestion_status_update() {
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        let path = temp.path();
+        let store = SemanticMemoryStore::connect(path).await.unwrap();
+
+        let suggestion = Suggestion::new(
+            SuggestionType::Improvement,
+            "Improvement suggestion".to_string(),
+            "Context".to_string(),
+            None,
+        );
+
+        store.store_suggestion(&suggestion).await.unwrap();
+
+        store.update_suggestion_status(&suggestion.id, SuggestionStatus::Accepted).await.unwrap();
+
+        let accepted = store.get_suggestions(Some(SuggestionStatus::Accepted), 10).await.unwrap();
+        assert_eq!(accepted.len(), 1);
+        assert_eq!(accepted[0].id, suggestion.id);
+        assert!(accepted[0].accepted_at.is_some());
+
+        store.update_suggestion_status(&suggestion.id, SuggestionStatus::Dismissed).await.unwrap();
+
+        let pending = store.get_suggestions(Some(SuggestionStatus::Pending), 10).await.unwrap();
+        assert!(pending.is_empty());
+        let dismissed = store.get_suggestions(Some(SuggestionStatus::Dismissed), 10).await.unwrap();
+        assert_eq!(dismissed.len(), 1);
+        assert!(dismissed[0].dismissed_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_suggestion_delete() {
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        let path = temp.path();
+        let store = SemanticMemoryStore::connect(path).await.unwrap();
+
+        let suggestion = Suggestion::new(
+            SuggestionType::Routine,
+            "Routine suggestion".to_string(),
+            "Context".to_string(),
+            None,
+        );
+
+        store.store_suggestion(&suggestion).await.unwrap();
+        let before = store.get_suggestions(None, 10).await.unwrap();
+        assert_eq!(before.len(), 1);
+
+        store.delete_suggestion(&suggestion.id).await.unwrap();
+        let after = store.get_suggestions(None, 10).await.unwrap();
+        assert!(after.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_suggestion_filtering_by_type() {
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        let path = temp.path();
+        let store = SemanticMemoryStore::connect(path).await.unwrap();
+
+        let follow_up = Suggestion::new(
+            SuggestionType::FollowUp,
+            "Follow-up".to_string(),
+            "Context".to_string(),
+            None,
+        );
+        let improvement = Suggestion::new(
+            SuggestionType::Improvement,
+            "Improvement".to_string(),
+            "Context".to_string(),
+            None,
+        );
+        let routine = Suggestion::new(
+            SuggestionType::Routine,
+            "Routine".to_string(),
+            "Context".to_string(),
+            None,
+        );
+
+        store.store_suggestion(&follow_up).await.unwrap();
+        store.store_suggestion(&improvement).await.unwrap();
+        store.store_suggestion(&routine).await.unwrap();
+
+        let all = store.get_suggestions(None, 10).await.unwrap();
+        assert_eq!(all.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_memory_consolidate() {
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        let path = temp.path();
+        let store = SemanticMemoryStore::connect(path).await.unwrap();
+
+        let config = ModelConfig {
+            provider: "mock".to_string(),
+            model: "test".to_string(),
+            base_url: None,
+            context_window: 8192,
+            temperature: 0.0,
+            top_p: None,
+            max_tokens: None,
+        };
+
+        let count = store.consolidate(&config).await.unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_suggestion_type_display() {
+        assert_eq!(SuggestionType::FollowUp.to_string(), "follow_up");
+        assert_eq!(SuggestionType::Improvement.to_string(), "improvement");
+        assert_eq!(SuggestionType::Routine.to_string(), "routine");
+        assert_eq!(SuggestionType::Contextual.to_string(), "contextual");
+    }
+
+    #[test]
+    fn test_suggestion_status_display() {
+        assert_eq!(SuggestionStatus::Pending.to_string(), "pending");
+        assert_eq!(SuggestionStatus::Accepted.to_string(), "accepted");
+        assert_eq!(SuggestionStatus::Dismissed.to_string(), "dismissed");
+        assert_eq!(SuggestionStatus::Expired.to_string(), "expired");
+    }
+
+    #[test]
+    fn test_suggestion_creation_all_types() {
+        let follow_up = Suggestion::new(
+            SuggestionType::FollowUp,
+            "Follow up content".to_string(),
+            "Context".to_string(),
+            None,
+        );
+        assert_eq!(follow_up.suggestion_type, SuggestionType::FollowUp);
+        assert_eq!(follow_up.status, SuggestionStatus::Pending);
+
+        let improvement = Suggestion::new(
+            SuggestionType::Improvement,
+            "Improvement content".to_string(),
+            "Context".to_string(),
+            None,
+        );
+        assert_eq!(improvement.suggestion_type, SuggestionType::Improvement);
+
+        let routine = Suggestion::new(
+            SuggestionType::Routine,
+            "Routine content".to_string(),
+            "Context".to_string(),
+            None,
+        );
+        assert_eq!(routine.suggestion_type, SuggestionType::Routine);
+
+        let contextual = Suggestion::new(
+            SuggestionType::Contextual,
+            "Contextual content".to_string(),
+            "Context".to_string(),
+            None,
+        );
+        assert_eq!(contextual.suggestion_type, SuggestionType::Contextual);
+    }
+
+    #[test]
+    fn test_memory_search_query_struct() {
+        let query = MemorySearchQuery {
+            query: "test query".to_string(),
+            memory_type: Some(MemoryType::Fact),
+            limit: 10,
+            min_relevance: 0.7,
+        };
+        assert_eq!(query.query, "test query");
+        assert_eq!(query.memory_type, Some(MemoryType::Fact));
+        assert_eq!(query.limit, 10);
+        assert!((query.min_relevance - 0.7).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_memory_entry_metadata() {
+        let entry = create_memory_entry(
+            "Test with metadata".to_string(),
+            vec![0.1, 0.2, 0.3],
+            MemoryType::Pattern,
+            0.6,
+        );
+        assert_eq!(entry.metadata, serde_json::json!({}));
     }
 }

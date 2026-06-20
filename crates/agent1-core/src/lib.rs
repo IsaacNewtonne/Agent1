@@ -312,6 +312,9 @@ pub enum EventType {
     EscalationResolved,
     AgentCreated,
     AgentTerminated,
+    SuggestionCreated,
+    SuggestionAccepted,
+    SuggestionDismissed,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

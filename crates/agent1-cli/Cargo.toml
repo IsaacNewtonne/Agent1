@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 agent1-core.workspace = true
 agent1-db.workspace = true
+agent1-memory.workspace = true
 agent1-models.workspace = true
 agent1-orchestrator.workspace = true
 agent1-runtime.workspace = true
