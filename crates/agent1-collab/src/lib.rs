@@ -207,17 +207,34 @@ impl CollaborationEngine {
 
     pub async fn blackboard_read(&self, project_id: &str) -> Vec<BlackboardEntry> {
         let cache = self.blackboard.read().await;
-        cache
+        let cached: Vec<BlackboardEntry> = cache
             .get(project_id)
             .map(|entries| entries.values().cloned().collect())
+            .unwrap_or_default();
+        drop(cache);
+        if !cached.is_empty() {
+            return cached;
+        }
+        self.store
+            .get_blackboard(project_id)
+            .await
             .unwrap_or_default()
     }
 
     pub async fn blackboard_get(&self, project_id: &str, key: &str) -> Option<BlackboardEntry> {
         let cache = self.blackboard.read().await;
-        cache
+        let cached = cache
             .get(project_id)
-            .and_then(|entries| entries.get(key).cloned())
+            .and_then(|entries| entries.get(key).cloned());
+        drop(cache);
+        if cached.is_some() {
+            return cached;
+        }
+        self.store
+            .get_blackboard(project_id)
+            .await
+            .ok()
+            .and_then(|entries| entries.into_iter().find(|entry| entry.key == key))
     }
 
     pub async fn blackboard_write(

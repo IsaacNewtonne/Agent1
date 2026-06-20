@@ -4,9 +4,10 @@ This file tracks the work that still requires new framework dependencies, packag
 
 ## Desktop
 
-- Complete migration of mission control from static HTML to React/Tauri and retire the legacy static shell.
+- Retire the legacy static shell now that the React/Tauri collaboration workspace is active.
 - Add dedicated desktop UX for MCP manager, memory browsing/editing, and session cancellation.
 - Add desktop E2E tests for create/save/run/approve/session-explorer workflows.
+- Add a production diagnostics screen for app version, API version, DB path, provider health, MCP health, and exportable logs.
 
 ## Runtime
 
@@ -17,5 +18,5 @@ This file tracks the work that still requires new framework dependencies, packag
 ## Verification
 
 - Add integration tests for HTTP API, MCP lifecycle, memory storage, and security policy paths.
-- Add UI/E2E tests for the desktop app once Tauri/React exists.
 - Add release smoke tests for install-and-first-run under 10 minutes.
+- Keep `scripts/smoke-test.ps1` in CI as the server/API vertical-slice guard.

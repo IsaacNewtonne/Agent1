@@ -275,6 +275,7 @@ async fn main() -> anyhow::Result<()> {
                     title: Some(task.chars().take(80).collect()),
                     agent,
                     input: task,
+                    project_id: None,
                     workspace_root: workspace,
                     session_id: None,
                 })
@@ -621,6 +622,7 @@ async fn run_agent_once(
             title: Some(input.chars().take(80).collect()),
             agent,
             input,
+            project_id: None,
             workspace_root,
             session_id: None,
         })
@@ -1389,9 +1391,14 @@ async fn api_sessions_create(
         .get("title")
         .and_then(Value::as_str)
         .map(ToString::to_string);
+    let project_id = body
+        .get("project_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(ToString::to_string);
     let session = state
         .store
-        .create_session_shell(root_agent_id, title)
+        .create_session_shell(root_agent_id, title, project_id)
         .await?;
     Ok(json_ok(
         json!({"session_id": session.id, "session": session}),
@@ -2031,6 +2038,11 @@ async fn run_agent_http(
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow::anyhow!("missing input"))?;
     let workspace = body.get("workspace").and_then(Value::as_str).unwrap_or(".");
+    let project_id = body
+        .get("project_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(String::from);
     let agent = store.get_agent(agent_id).await?;
     let session_id = body
         .get("session_id")
@@ -2042,6 +2054,7 @@ async fn run_agent_http(
     let input = input.to_string();
     let workspace_root = PathBuf::from(workspace);
     let task_session_id = session_id.clone();
+    let task_project_id = project_id.clone();
     let task = tokio::spawn(async move {
         let runtime = AgentRuntime::new(
             store_for_task.clone(),
@@ -2057,6 +2070,7 @@ async fn run_agent_http(
                 title: Some(input.chars().take(80).collect()),
                 agent,
                 input,
+                project_id: task_project_id,
                 workspace_root,
                 session_id: Some(task_session_id.clone()),
             })
@@ -2069,9 +2083,11 @@ async fn run_agent_http(
     let result = task.await;
     active_runs.remove(&session_id).await;
     match result {
-        Ok(Ok(result)) => {
-            Ok(json!({"session_id": result.session_id, "final": result.final_answer}))
-        }
+        Ok(Ok(result)) => Ok(json!({
+            "session_id": result.session_id,
+            "project_id": project_id,
+            "final": result.final_answer
+        })),
         Ok(Err(err)) => Err(err),
         Err(join_error) if join_error.is_cancelled() => {
             Ok(json!({"session_id": session_id, "status": "cancelled", "final": ""}))
@@ -2374,20 +2390,61 @@ async fn api_projects_invite(
         .get("created_by")
         .and_then(Value::as_str)
         .unwrap_or("user");
-    let permissions = ExternalPermissions {
-        can_read_blackboard: true,
-        can_write_blackboard: true,
-        can_create_artifacts: true,
-        allowed_tools: vec![],
-        can_delegate_tasks: false,
-        max_concurrent_tasks: 2,
-    };
+    let permissions = parse_external_permissions(body.get("permissions"))?;
     let token = state
         .gateway
         .generate_invite(&id, permissions, created_by.to_string())
         .await
         .map_err(|e| ApiError::internal(e.to_string()))?;
-    Ok(json_ok(json!({"token": token.token, "project_id": id})))
+    Ok(json_ok(json!({
+        "token": token.token,
+        "invite": token,
+        "project_id": id
+    })))
+}
+
+fn parse_external_permissions(value: Option<&Value>) -> Result<ExternalPermissions, ApiError> {
+    let Some(value) = value else {
+        return Ok(ExternalPermissions::default());
+    };
+    let object = value
+        .as_object()
+        .ok_or_else(|| ApiError::bad_request("permissions must be an object"))?;
+    let allowed_tools = object
+        .get("allowed_tools")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(ToString::to_string))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let max_concurrent_tasks = object
+        .get("max_concurrent_tasks")
+        .and_then(Value::as_u64)
+        .unwrap_or(2)
+        .clamp(1, 16) as u32;
+    Ok(ExternalPermissions {
+        can_read_blackboard: object
+            .get("can_read_blackboard")
+            .and_then(Value::as_bool)
+            .unwrap_or(true),
+        can_write_blackboard: object
+            .get("can_write_blackboard")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        can_create_artifacts: object
+            .get("can_create_artifacts")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        allowed_tools,
+        can_delegate_tasks: object
+            .get("can_delegate_tasks")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        max_concurrent_tasks,
+    })
 }
 
 async fn api_projects_externals(
@@ -2648,7 +2705,7 @@ system_prompt = "Help."
             .await
             .expect("store");
         let session = store
-            .create_session_shell("agent1", Some("cancel test".to_string()))
+            .create_session_shell("agent1", Some("cancel test".to_string()), None)
             .await
             .expect("session");
         let active_runs = Arc::new(ActiveRunRegistry::default());

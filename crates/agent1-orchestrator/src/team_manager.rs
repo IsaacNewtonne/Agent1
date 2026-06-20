@@ -199,6 +199,7 @@ impl TeamManager {
                 title: Some(step.description.clone()),
                 agent,
                 input: step.description.clone(),
+                project_id: None,
                 workspace_root,
                 session_id: None,
             })

@@ -42,6 +42,7 @@ impl SqliteStore {
     }
 
     async fn migrate(&self) -> Result<()> {
+        self.ensure_pre_initial_compat().await?;
         self.pool.execute(INITIAL_SCHEMA).await.map_err(|err| {
             Agent1Error::Runtime(format!("failed to run initial migration: {err}"))
         })?;
@@ -57,6 +58,56 @@ impl SqliteStore {
             .map_err(|err| {
                 Agent1Error::Runtime(format!("failed to run collaboration migration: {err}"))
             })?;
+        self.ensure_compat_columns().await?;
+        Ok(())
+    }
+
+    async fn ensure_pre_initial_compat(&self) -> Result<()> {
+        let has_sessions = sqlx::query(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sessions' LIMIT 1",
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|err| {
+            Agent1Error::Runtime(format!("failed to inspect existing sessions table: {err}"))
+        })?
+        .is_some();
+
+        if has_sessions {
+            self.ensure_sessions_project_id().await?;
+        }
+        Ok(())
+    }
+
+    async fn ensure_compat_columns(&self) -> Result<()> {
+        self.ensure_sessions_project_id().await?;
+        self.pool
+            .execute("CREATE INDEX IF NOT EXISTS idx_sessions_project_id ON sessions(project_id)")
+            .await
+            .map_err(|err| {
+                Agent1Error::Runtime(format!("failed to index sessions.project_id: {err}"))
+            })?;
+        Ok(())
+    }
+
+    async fn ensure_sessions_project_id(&self) -> Result<()> {
+        let columns = sqlx::query("PRAGMA table_info(sessions)")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|err| {
+                Agent1Error::Runtime(format!("failed to inspect sessions schema: {err}"))
+            })?;
+        let has_project_id = columns
+            .iter()
+            .any(|row| row.get::<String, _>("name") == "project_id");
+        if !has_project_id {
+            self.pool
+                .execute("ALTER TABLE sessions ADD COLUMN project_id TEXT")
+                .await
+                .map_err(|err| {
+                    Agent1Error::Runtime(format!("failed to add sessions.project_id: {err}"))
+                })?;
+        }
         Ok(())
     }
 
@@ -162,12 +213,13 @@ impl SqliteStore {
     pub async fn create_session(&self, session: &Session) -> Result<()> {
         sqlx::query(
             r#"
-            INSERT INTO sessions (id, title, root_agent_id, status, created_at, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            INSERT INTO sessions (id, title, project_id, root_agent_id, status, created_at, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
             "#,
         )
         .bind(&session.id)
         .bind(&session.title)
+        .bind(&session.project_id)
         .bind(&session.root_agent_id)
         .bind(json_name(&session.status)?)
         .bind(session.created_at)
@@ -199,11 +251,13 @@ impl SqliteStore {
         &self,
         root_agent_id: &str,
         title: Option<String>,
+        project_id: Option<String>,
     ) -> Result<Session> {
         let created_at = now();
         let session = Session {
             id: agent1_core::new_id("sess"),
             title,
+            project_id,
             root_agent_id: root_agent_id.to_string(),
             status: SessionStatus::Running,
             created_at,
@@ -216,7 +270,7 @@ impl SqliteStore {
     pub async fn get_session(&self, session_id: &str) -> Result<Session> {
         let row = sqlx::query(
             r#"
-            SELECT id, title, root_agent_id, status, created_at, updated_at
+            SELECT id, title, project_id, root_agent_id, status, created_at, updated_at
             FROM sessions
             WHERE id = ?1
             "#,
@@ -233,7 +287,7 @@ impl SqliteStore {
     pub async fn recent_sessions(&self, limit: i64) -> Result<Vec<Session>> {
         let rows = sqlx::query(
             r#"
-            SELECT id, title, root_agent_id, status, created_at, updated_at
+            SELECT id, title, project_id, root_agent_id, status, created_at, updated_at
             FROM sessions
             ORDER BY created_at DESC
             LIMIT ?1
@@ -1091,6 +1145,7 @@ fn session_from_row(row: sqlx::sqlite::SqliteRow) -> Result<Session> {
     Ok(Session {
         id: row.get("id"),
         title: row.get("title"),
+        project_id: row.get("project_id"),
         root_agent_id: row.get("root_agent_id"),
         status,
         created_at: row.get::<DateTime<Utc>, _>("created_at"),

@@ -59,7 +59,7 @@
 
 .collab-header {
   display: grid;
-  grid-template-columns: minmax(240px, 0.8fr) minmax(240px, 1fr) minmax(300px, 0.9fr);
+  grid-template-columns: minmax(240px, 0.72fr) minmax(560px, 1.35fr) minmax(260px, 0.72fr);
   align-items: center;
   gap: 16px;
   padding: 10px 16px;
@@ -147,7 +147,8 @@
 }
 
 .project-switcher {
-  min-width: 180px;
+  flex: 1 1 180px;
+  min-width: 0;
   max-width: 280px;
 }
 
@@ -179,8 +180,11 @@
 
 .collab-mode-selector {
   display: flex;
+  flex: 0 0 auto;
   gap: 3px;
   min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
   padding: 3px;
   border: 1px solid rgba(153, 217, 255, 0.1);
   border-radius: 999px;
@@ -190,8 +194,11 @@
 .mode-option {
   position: relative;
   display: inline-flex;
+  flex: 0 0 auto;
   align-items: center;
+  justify-content: center;
   gap: 5px;
+  min-width: 0;
   min-height: 28px;
   padding: 5px 9px;
   border: 0;
@@ -202,6 +209,12 @@
   font-size: 11px;
   font-weight: 800;
   transition: background var(--transition-fast), color var(--transition-fast), transform var(--transition-fast);
+}
+
+.mode-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .mode-option:hover,
@@ -215,6 +228,7 @@
   left: 50%;
   bottom: calc(100% + 10px);
   z-index: 20;
+  display: none;
   width: max-content;
   max-width: 210px;
   padding: 7px 9px;
@@ -251,6 +265,7 @@
 
 .mode-option:hover .mode-desc,
 .mode-option:focus-visible .mode-desc {
+  display: block;
   opacity: 1;
   transform: translate(-50%, 0);
 }
@@ -660,6 +675,7 @@
   border-radius: 50%;
   background: transparent;
   box-shadow: none;
+  font-size: 0;
   transform: none;
 }
 
@@ -907,6 +923,81 @@
 
 .collab-event.expanded .event-payload {
   display: block;
+}
+
+.approval-structured {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 9px;
+}
+
+.collab-approval-card > .approval-header,
+.collab-approval-card > .approval-request {
+  display: none;
+}
+
+.approval-structured-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.approval-structured-head span,
+.approval-structured-head strong {
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 900;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.approval-structured-head span {
+  color: var(--accent-primary);
+}
+
+.approval-structured-head strong {
+  color: var(--accent-warning);
+}
+
+.approval-meta-grid,
+.inspector-kv {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px 10px;
+  align-items: baseline;
+}
+
+.approval-meta-grid span,
+.inspector-kv span {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.approval-meta-grid strong,
+.inspector-kv strong {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.approval-structured pre {
+  max-height: 96px;
+  margin: 0;
+  overflow: hidden;
+  color: #dbeaff;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .collab-composer {
@@ -1347,10 +1438,231 @@
   right: 16px;
   bottom: 8px;
   z-index: 50;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   color: var(--text-mono);
   font-family: var(--font-mono);
   font-size: 10px;
-  pointer-events: none;
+  pointer-events: auto;
+}
+
+.status-inspector-btn {
+  min-height: 24px;
+  padding: 4px 8px;
+  border: 1px solid rgba(77, 231, 212, 0.28);
+  border-radius: 999px;
+  color: var(--accent-primary);
+  background: rgba(3, 10, 22, 0.78);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.project-inspector {
+  position: fixed;
+  top: 82px;
+  right: 18px;
+  bottom: 42px;
+  z-index: 80;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) minmax(0, 0.82fr) auto;
+  gap: 14px;
+  width: min(760px, calc(100vw - 36px));
+  padding: 16px;
+  border-radius: 20px;
+  overflow: hidden;
+}
+
+.inspector-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid rgba(153, 217, 255, 0.12);
+}
+
+.inspector-head strong {
+  display: block;
+  margin-top: 3px;
+  color: var(--text-primary);
+  font-family: var(--font-display);
+  font-size: 18px;
+}
+
+.inspector-grid,
+.inspector-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  min-height: 0;
+}
+
+.project-inspector section {
+  min-width: 0;
+  min-height: 0;
+}
+
+.inspector-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 100%;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.inspector-list.compact {
+  max-height: 150px;
+}
+
+.inspector-row,
+.inspector-empty {
+  border: 1px solid rgba(153, 217, 255, 0.12);
+  border-radius: 12px;
+  background: rgba(4, 10, 22, 0.62);
+  padding: 9px 10px;
+}
+
+.inspector-row strong {
+  display: block;
+  overflow: hidden;
+  color: var(--accent-primary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.inspector-row p,
+.inspector-empty {
+  margin: 5px 0 0;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.inspector-empty {
+  margin: 0;
+}
+
+.external-builder-section {
+  display: grid;
+  gap: 10px;
+  padding: 10px 0;
+  border-top: 1px solid rgba(153, 217, 255, 0.1);
+}
+
+.external-builder-section:first-of-type {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.permission-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 10px;
+}
+
+.permission-toggle {
+  display: flex;
+  min-height: 34px;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  border: 1px solid rgba(153, 217, 255, 0.12);
+  border-radius: 10px;
+  background: rgba(4, 10, 22, 0.5);
+}
+
+.permission-toggle input {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--accent-primary);
+}
+
+.popover-actions.inline {
+  justify-content: flex-start;
+}
+
+.invite-result {
+  display: grid;
+  gap: 5px;
+  padding: 9px 10px;
+  border: 1px solid rgba(77, 231, 212, 0.22);
+  border-radius: 12px;
+  background: rgba(77, 231, 212, 0.08);
+}
+
+.invite-result span {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.invite-result code {
+  overflow: hidden;
+  color: var(--accent-primary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcp-manager-list {
+  display: grid;
+  max-height: 180px;
+  gap: 8px;
+  overflow-y: auto;
+}
+
+.mcp-manager-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 9px;
+  border: 1px solid rgba(153, 217, 255, 0.12);
+  border-radius: 12px;
+  background: rgba(4, 10, 22, 0.56);
+}
+
+.mcp-manager-row strong,
+.mcp-manager-row span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcp-manager-row strong {
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.mcp-manager-row span {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.mcp-manager-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mcp-manager-actions .btn-ghost,
+.mcp-manager-actions .btn-danger {
+  min-height: 28px;
+  padding: 5px 8px;
+  font-size: 10px;
 }
 
 .collab-lane-list::-webkit-scrollbar,
@@ -1438,5 +1750,42 @@
   .collab-metrics,
   .collab-project-badge {
     flex-wrap: wrap;
+  }
+
+  .collab-status-bar {
+    position: static;
+    justify-content: flex-end;
+    padding: 0 16px 12px;
+  }
+}
+
+@media (max-width: 480px) {
+  .collab-header-center {
+    width: 100%;
+  }
+
+  .collab-project-badge {
+    width: 100%;
+    gap: 8px;
+  }
+
+  .project-switcher {
+    flex-basis: 100%;
+    max-width: none;
+  }
+
+  .collab-mode-selector {
+    flex-basis: 100%;
+    width: 100%;
+  }
+
+  .mode-option {
+    flex: 1 1 0;
+    padding: 5px 7px;
+  }
+
+  .mode-label,
+  .mode-desc {
+    display: none;
   }
 }

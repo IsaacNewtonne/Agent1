@@ -48,6 +48,124 @@ function modelName(model) {
   return typeof model === "string" ? model : model?.name || "";
 }
 
+function formatEventName(type = "") {
+  return String(type).replace(/([A-Z])/g, " $1").trim() || "Event";
+}
+
+function ProjectInspector({ collab, onClose }) {
+  const trace = collab.trace || {};
+  const session = trace.session || {};
+  const messages = trace.messages || [];
+  const events = trace.events || [];
+  const approvals = trace.approvals || [];
+  const tasks = collab.collabTasks || [];
+  const blackboard = collab.blackboardEntries || [];
+
+  return (
+    <aside className="project-inspector glass-panel" role="dialog" aria-label="Project inspector">
+      <div className="inspector-head">
+        <div>
+          <span className="popover-sub">Project timeline</span>
+          <strong>{collab.activeProject?.name || "No project"}</strong>
+        </div>
+        <button type="button" className="btn-ghost" onClick={onClose}>Close</button>
+      </div>
+
+      <div className="inspector-grid">
+        <section>
+          <div className="collab-section-label">SESSION</div>
+          <div className="inspector-kv">
+            <span>ID</span><strong>{session.id || "none"}</strong>
+            <span>Status</span><strong>{session.status || "idle"}</strong>
+            <span>Agent</span><strong>{session.root_agent_id || collab.agent1Agent?.id || "agent1"}</strong>
+            <span>Project</span><strong>{session.project_id || collab.activeProject?.id || "unbound"}</strong>
+          </div>
+        </section>
+
+        <section>
+          <div className="collab-section-label">PROJECT STATE</div>
+          <div className="inspector-kv">
+            <span>Tasks</span><strong>{tasks.length}</strong>
+            <span>Blackboard</span><strong>{blackboard.length}</strong>
+            <span>Externals</span><strong>{(collab.externals || []).length}</strong>
+            <span>MCP</span><strong>{(collab.mcpServers || []).length}</strong>
+          </div>
+        </section>
+      </div>
+
+      <div className="inspector-columns">
+        <section>
+          <div className="collab-section-label">MESSAGES</div>
+          <div className="inspector-list">
+            {messages.slice(-8).map((message) => (
+              <article key={message.id} className="inspector-row">
+                <strong>{message.role}</strong>
+                <p>{String(message.content || "").slice(0, 360)}</p>
+              </article>
+            ))}
+            {!messages.length && <div className="inspector-empty">No messages yet.</div>}
+          </div>
+        </section>
+
+        <section>
+          <div className="collab-section-label">EVENTS</div>
+          <div className="inspector-list">
+            {events.slice(-10).reverse().map((event) => (
+              <article key={event.id} className="inspector-row">
+                <strong>{formatEventName(event.event_type)}</strong>
+                <p>{typeof event.payload === "object" ? JSON.stringify(event.payload) : String(event.payload || "")}</p>
+              </article>
+            ))}
+            {!events.length && <div className="inspector-empty">No runtime events yet.</div>}
+          </div>
+        </section>
+      </div>
+
+      <div className="inspector-columns">
+        <section>
+          <div className="collab-section-label">TASKS</div>
+          <div className="inspector-list compact">
+            {tasks.slice(0, 8).map((task) => (
+              <article key={task.id} className="inspector-row">
+                <strong>{task.status || "queued"}</strong>
+                <p>{task.description}</p>
+              </article>
+            ))}
+            {!tasks.length && <div className="inspector-empty">No project tasks.</div>}
+          </div>
+        </section>
+
+        <section>
+          <div className="collab-section-label">BLACKBOARD</div>
+          <div className="inspector-list compact">
+            {blackboard.slice(0, 8).map((entry) => (
+              <article key={entry.id || entry.key} className="inspector-row">
+                <strong>{entry.key}</strong>
+                <p>{typeof entry.value === "object" ? JSON.stringify(entry.value) : String(entry.value ?? "")}</p>
+              </article>
+            ))}
+            {!blackboard.length && <div className="inspector-empty">No blackboard entries.</div>}
+          </div>
+        </section>
+      </div>
+
+      {approvals.length > 0 && (
+        <section>
+          <div className="collab-section-label">APPROVAL HISTORY</div>
+          <div className="inspector-list compact">
+            {approvals.slice(0, 6).map((approval) => (
+              <article key={approval.id} className="inspector-row">
+                <strong>{approval.decision || "pending"}</strong>
+                <p>{approval.request?.tool_name || "approval"} by {approval.agent_id}</p>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
+    </aside>
+  );
+}
+
 export default function CollabWorkspace() {
   const settings = loadSettings();
   const collab = useCollaboration(settings.apiBase);
@@ -57,6 +175,7 @@ export default function CollabWorkspace() {
   const [agentBuilderOpen, setAgentBuilderOpen] = useState(false);
   const [externalBuilderOpen, setExternalBuilderOpen] = useState(false);
   const [agent1ConfigOpen, setAgent1ConfigOpen] = useState(false);
+  const [inspectorOpen, setInspectorOpen] = useState(false);
   const [conversation, setConversation] = useState([]);
   const [isRunning, setIsRunning] = useState(false);
   const [deleteCandidate, setDeleteCandidate] = useState(null);
@@ -77,11 +196,24 @@ export default function CollabWorkspace() {
   // External server builder state
   const [externalForm, setExternalForm] = useState({ name: "", command: "", args: "", enabled: true });
   const [externalFormStatus, setExternalFormStatus] = useState("");
+  const [invitePermissions, setInvitePermissions] = useState({
+    can_read_blackboard: true,
+    can_write_blackboard: false,
+    can_create_artifacts: false,
+    can_delegate_tasks: false,
+    max_concurrent_tasks: 2,
+    allowed_tools: "",
+  });
+  const [inviteResult, setInviteResult] = useState(null);
+  const [mcpActionStatus, setMcpActionStatus] = useState("");
 
   // Derived
   const connectedExternalCount = useMemo(
-    () => (collab.mcpServers || []).filter((s) => s.enabled).length,
-    [collab.mcpServers]
+    () => (
+      (collab.externals || []).filter((agent) => agent.status === "connected").length +
+      (collab.mcpServers || []).filter((server) => server.enabled).length
+    ),
+    [collab.externals, collab.mcpServers]
   );
   const providerOptions = useMemo(() => {
     const fallback = ["opencode", "ollama", "openai_compatible", "nvidia"].map((provider) => ({
@@ -172,6 +304,7 @@ export default function CollabWorkspace() {
       setAgentBuilderOpen(false);
       setExternalBuilderOpen(false);
       setAgent1ConfigOpen(false);
+      setInspectorOpen(false);
       setDeleteCandidate(null);
     };
     window.addEventListener("keydown", onKeyDown);
@@ -220,7 +353,7 @@ export default function CollabWorkspace() {
     setIsRunning(true);
     setConversation((prev) => [...prev, { role: "user", content: input }]);
     try {
-      const result = await collab.runTask(input, collab.agent1Agent?.id, workspace);
+      const result = await collab.runTask(input, collab.agent1Agent?.id, workspace, collab.activeProject?.id);
       if (result?.final_answer) {
         setConversation((prev) => [...prev, { role: "agent1", content: result.final_answer }]);
       }
@@ -299,10 +432,56 @@ export default function CollabWorkspace() {
         enabled: externalForm.enabled,
       });
       setExternalFormStatus("Added!");
-      setTimeout(() => { setExternalFormStatus(""); setExternalBuilderOpen(false); }, 800);
       setExternalForm({ name: "", command: "", args: "", enabled: true });
     } catch (err) {
       setExternalFormStatus(`Error: ${err.message}`);
+    }
+  };
+
+  const handleCreateInvite = async () => {
+    setExternalFormStatus("");
+    setInviteResult(null);
+    try {
+      const permissions = {
+        ...invitePermissions,
+        allowed_tools: invitePermissions.allowed_tools
+          .split(",")
+          .map((item) => item.trim())
+          .filter(Boolean),
+        max_concurrent_tasks: Number(invitePermissions.max_concurrent_tasks) || 1,
+      };
+      const result = await collab.createInvite(permissions);
+      setInviteResult(result.invite || result);
+    } catch (err) {
+      setExternalFormStatus(`Invite failed: ${err.message}`);
+    }
+  };
+
+  const handleMcpToggle = async (server) => {
+    setMcpActionStatus("");
+    try {
+      await collab.updateMcpServer(server.id || server.name, { enabled: !server.enabled });
+    } catch (err) {
+      setMcpActionStatus(`MCP update failed: ${err.message}`);
+    }
+  };
+
+  const handleMcpDelete = async (server) => {
+    setMcpActionStatus("");
+    try {
+      await collab.deleteMcpServer(server.id || server.name);
+    } catch (err) {
+      setMcpActionStatus(`MCP delete failed: ${err.message}`);
+    }
+  };
+
+  const handleMcpHealth = async (server) => {
+    setMcpActionStatus("");
+    try {
+      const result = await collab.checkMcpHealth(server.id || server.name);
+      setMcpActionStatus(`${server.name}: ${result.healthy ? "healthy" : "unhealthy"}`);
+    } catch (err) {
+      setMcpActionStatus(`MCP health failed: ${err.message}`);
     }
   };
 
@@ -374,9 +553,9 @@ export default function CollabWorkspace() {
         {/* Right Lane: External Agents / MCP Servers */}
         <AgentLane
           title="External Agents"
-          subtitle="Invited and permissioned"
+          subtitle="Invited agents and MCP tools"
           side="right"
-          agents={[]}
+          agents={collab.externals}
           mcpServers={collab.mcpServers}
           runningAgentIds={collab.runningAgentIds}
           selectedAgentId={selectedAgentId}
@@ -566,9 +745,64 @@ export default function CollabWorkspace() {
         <div className="collab-popover glass-panel" id="external-builder" role="dialog">
           <form onSubmit={handleSaveExternal}>
             <div className="popover-head">
-              <strong>Invite External Agent</strong>
+              <div>
+                <strong>External Collaboration</strong>
+                <span className="popover-sub">Invite agents or connect MCP tools</span>
+              </div>
               <button type="button" className="btn-ghost" onClick={() => setExternalBuilderOpen(false)}>✕</button>
             </div>
+            <div className="external-builder-section">
+              <div className="collab-section-label">INVITE PERMISSIONS</div>
+              <div className="permission-grid">
+                {[
+                  ["can_read_blackboard", "Read blackboard"],
+                  ["can_write_blackboard", "Write blackboard"],
+                  ["can_create_artifacts", "Create artifacts"],
+                  ["can_delegate_tasks", "Delegate tasks"],
+                ].map(([key, label]) => (
+                  <label key={key} className="permission-toggle">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(invitePermissions[key])}
+                      onChange={(e) => setInvitePermissions((value) => ({ ...value, [key]: e.target.checked }))}
+                    />
+                    <span>{label}</span>
+                  </label>
+                ))}
+                <label>
+                  <span>Max concurrent tasks</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="16"
+                    value={invitePermissions.max_concurrent_tasks}
+                    onChange={(e) => setInvitePermissions((value) => ({ ...value, max_concurrent_tasks: e.target.value }))}
+                  />
+                </label>
+                <label>
+                  <span>Allowed tools</span>
+                  <input
+                    type="text"
+                    value={invitePermissions.allowed_tools}
+                    onChange={(e) => setInvitePermissions((value) => ({ ...value, allowed_tools: e.target.value }))}
+                    placeholder="tool_a, tool_b"
+                  />
+                </label>
+              </div>
+              <div className="popover-actions inline">
+                <button type="button" className="btn-confirm" onClick={handleCreateInvite} disabled={!collab.activeProject}>
+                  Generate Invite
+                </button>
+              </div>
+              {inviteResult && (
+                <div className="invite-result">
+                  <span>Token</span>
+                  <code>{inviteResult.token}</code>
+                </div>
+              )}
+            </div>
+            <div className="external-builder-section">
+              <div className="collab-section-label">MCP SERVER</div>
             <div className="popover-grid">
               <label>
                 <span>Name</span>
@@ -599,10 +833,34 @@ export default function CollabWorkspace() {
                 />
               </label>
             </div>
+            </div>
             {externalFormStatus && <div className="popover-status">{externalFormStatus}</div>}
             <div className="popover-actions">
               <button type="submit" className="btn-confirm">Add Server</button>
             </div>
+            {(collab.mcpServers || []).length > 0 && (
+              <div className="external-builder-section">
+                <div className="collab-section-label">MCP MANAGER</div>
+                <div className="mcp-manager-list">
+                  {(collab.mcpServers || []).map((server) => (
+                    <div key={server.id || server.name} className="mcp-manager-row">
+                      <div>
+                        <strong>{server.name}</strong>
+                        <span>{server.enabled ? "enabled" : "disabled"} - {server.command || "stdio"}</span>
+                      </div>
+                      <div className="mcp-manager-actions">
+                        <button type="button" className="btn-ghost" onClick={() => handleMcpHealth(server)}>Health</button>
+                        <button type="button" className="btn-ghost" onClick={() => handleMcpToggle(server)}>
+                          {server.enabled ? "Disable" : "Enable"}
+                        </button>
+                        <button type="button" className="btn-danger" onClick={() => handleMcpDelete(server)}>Delete</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                {mcpActionStatus && <div className="popover-status">{mcpActionStatus}</div>}
+              </div>
+            )}
           </form>
         </div>
       )}
@@ -660,10 +918,19 @@ export default function CollabWorkspace() {
 
       {/* Status bar */}
       <div className="collab-status-bar">
-        {collab.activeSessions.length > 0
-          ? `${collab.activeSessions.length} session(s) running`
-          : wsLabel}
+        <span>
+          {collab.activeSessions.length > 0
+            ? `${collab.activeSessions.length} session(s) running`
+            : wsLabel}
+        </span>
+        <button type="button" className="status-inspector-btn" onClick={() => setInspectorOpen(true)}>
+          Inspect
+        </button>
       </div>
+
+      {inspectorOpen && (
+        <ProjectInspector collab={collab} onClose={() => setInspectorOpen(false)} />
+      )}
     </div>
   );
 }

@@ -28,6 +28,7 @@ pub struct RunAgentRequest {
     pub agent: Agent,
     pub input: String,
     pub title: Option<String>,
+    pub project_id: Option<String>,
     pub workspace_root: PathBuf,
     pub session_id: Option<String>,
 }
@@ -102,6 +103,7 @@ impl<A: ApprovalDelegate + Clone> AgentRuntime<A> {
         let session = Session {
             id: session_id.clone(),
             title: request.title.clone(),
+            project_id: request.project_id.clone(),
             root_agent_id: request.agent.id.clone(),
             status: SessionStatus::Running,
             created_at,
@@ -597,6 +599,7 @@ impl<A: ApprovalDelegate + Clone> AgentRuntime<A> {
                     title: Some(format!("Delegated from {}", agent.id)),
                     agent: target_agent,
                     input: input.task,
+                    project_id: None,
                     workspace_root: workspace_root.clone(),
                     session_id: None,
                 }))
@@ -1288,6 +1291,7 @@ mod tests {
                 agent: test_agent("final", vec![]),
                 input: "finish".to_string(),
                 title: Some("mock".to_string()),
+                project_id: None,
                 workspace_root: PathBuf::from("."),
                 session_id: None,
             })
@@ -1306,6 +1310,7 @@ mod tests {
                 agent: test_agent("tool_file_list", vec!["file_list"]),
                 input: "list files".to_string(),
                 title: Some("mock tool".to_string()),
+                project_id: None,
                 workspace_root: PathBuf::from("."),
                 session_id: None,
             })
@@ -1330,6 +1335,7 @@ mod tests {
                 },
                 input: "loop".to_string(),
                 title: Some("mock failure".to_string()),
+                project_id: None,
                 workspace_root: PathBuf::from("."),
                 session_id: None,
             })
@@ -1369,6 +1375,7 @@ mod tests {
                 agent: test_agent("mcp_disabled", vec!["mcp_call"]),
                 input: "call mcp".to_string(),
                 title: Some("mcp disabled".to_string()),
+                project_id: None,
                 workspace_root: PathBuf::from("."),
                 session_id: None,
             })

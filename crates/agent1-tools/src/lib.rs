@@ -100,6 +100,14 @@ fn resolve_write_workspace_path(root: &Path, requested: &str) -> Result<PathBuf>
     if !parent.starts_with(&root) {
         return Err(Agent1Error::PathEscapesWorkspace(requested.to_string()));
     }
+    if target.exists() {
+        let existing = target.canonicalize().map_err(|err| {
+            Agent1Error::Runtime(format!("path `{requested}` is not accessible: {err}"))
+        })?;
+        if !existing.starts_with(&root) {
+            return Err(Agent1Error::PathEscapesWorkspace(requested.to_string()));
+        }
+    }
     Ok(target)
 }
 
@@ -724,8 +732,14 @@ async fn run_verification_command(
     command: &str,
     timeout_seconds: u64,
 ) -> Result<Value> {
-    let mut process = shell_command(command);
+    let (program, args) = verification_program_args(command).ok_or_else(|| {
+        Agent1Error::PermissionDenied(format!(
+            "`{command}` is not an allowlisted verification command"
+        ))
+    })?;
+    let mut process = Command::new(program);
     process
+        .args(args)
         .current_dir(root)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -750,6 +764,20 @@ async fn run_verification_command(
         "stdout": stdout,
         "stderr": stderr
     }))
+}
+
+fn verification_program_args(command: &str) -> Option<(&'static str, &'static [&'static str])> {
+    match command {
+        "git status --short" => Some(("git", &["status", "--short"])),
+        "git diff --stat" => Some(("git", &["diff", "--stat"])),
+        "cargo check" => Some(("cargo", &["check"])),
+        "cargo test" => Some(("cargo", &["test"])),
+        "cargo build" => Some(("cargo", &["build"])),
+        "npm test" => Some(("npm", &["test"])),
+        "npm run check" => Some(("npm", &["run", "check"])),
+        "npm run build" => Some(("npm", &["run", "build"])),
+        _ => None,
+    }
 }
 
 fn truncate_field(text: &mut String, max_bytes: usize) {

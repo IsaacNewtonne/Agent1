@@ -1,6 +1,6 @@
 [package]
 name = "agent1-desktop"
-version = "0.1.0"
+version = "0.2.0"
 description = "Agent1 desktop shell"
 edition = "2021"
 

@@ -15,12 +15,14 @@ export default function useCollaboration(apiBase) {
   const [modelProviders, setModelProviders] = useState([]);
   const [externals, setExternals] = useState([]);
   const [collabTasks, setCollabTasks] = useState([]);
+  const [blackboardEntries, setBlackboardEntries] = useState([]);
   const [activeSessions, setActiveSessions] = useState([]);
   const [recentEvents, setRecentEvents] = useState([]);
   const [trace, setTrace] = useState({ messages: [], events: [], approvals: [] });
   const [wsState, setWsState] = useState("disconnected");
   const [loading, setLoading] = useState(true);
   const wsRef = useRef(null);
+  const activeProjectRef = useRef(null);
   const modelRefreshRef = useRef(false);
   const refreshInFlightRef = useRef(false);
   const pendingRefreshRef = useRef(false);
@@ -45,6 +47,10 @@ export default function useCollaboration(apiBase) {
     }
     return response.json();
   }, [apiBase]);
+
+  useEffect(() => {
+    activeProjectRef.current = activeProject;
+  }, [activeProject]);
 
   // ─── Refresh loop ───
 
@@ -92,23 +98,38 @@ export default function useCollaboration(apiBase) {
         const projRes = await fetchJson("/api/projects");
         const nextProjects = projRes.projects || projRes || [];
         setProjects(nextProjects);
-        setActiveProjectState((current) => {
-          if (!nextProjects.length) {
-            localStorage.removeItem(ACTIVE_PROJECT_KEY);
-            return null;
-          }
+        if (!nextProjects.length) {
+          localStorage.removeItem(ACTIVE_PROJECT_KEY);
+          setActiveProjectState(null);
+          setExternals([]);
+          setCollabTasks([]);
+          setBlackboardEntries([]);
+        } else {
           const savedId = localStorage.getItem(ACTIVE_PROJECT_KEY);
           const selected =
-            nextProjects.find((project) => project.id === current?.id) ||
+            nextProjects.find((project) => project.id === activeProjectRef.current?.id) ||
             nextProjects.find((project) => project.id === savedId) ||
             nextProjects[0];
           if (selected?.id) localStorage.setItem(ACTIVE_PROJECT_KEY, selected.id);
-          return selected;
-        });
+          setActiveProjectState(selected);
+
+          const projectId = encodeURIComponent(selected.id);
+          const [externalsRes, tasksRes, blackboardRes] = await Promise.all([
+            fetchJson(`/api/projects/${projectId}/externals`).catch(() => ({ externals: [] })),
+            fetchJson(`/api/projects/${projectId}/tasks`).catch(() => ({ tasks: [] })),
+            fetchJson(`/api/projects/${projectId}/blackboard`).catch(() => ({ entries: [] })),
+          ]);
+          setExternals(externalsRes.externals || []);
+          setCollabTasks(tasksRes.tasks || []);
+          setBlackboardEntries(blackboardRes.entries || []);
+        }
       } catch {
         // Project API not available yet — use a default
         setProjects([]);
         setActiveProjectState(null);
+        setExternals([]);
+        setCollabTasks([]);
+        setBlackboardEntries([]);
       }
 
       if (!modelRefreshRef.current) {
@@ -245,13 +266,14 @@ export default function useCollaboration(apiBase) {
     }
   }, []);
 
-  const runTask = useCallback(async (input, agentId, workspace = ".") => {
+  const runTask = useCallback(async (input, agentId, workspace = ".", projectId = activeProject?.id) => {
     try {
       const result = await fetchJson("/api/sessions/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           agent_id: agentId || agent1Agent?.id || "agent1",
+          project_id: projectId || undefined,
           input,
           workspace,
         }),
@@ -265,7 +287,7 @@ export default function useCollaboration(apiBase) {
       console.error("Run failed:", error);
       throw error;
     }
-  }, [fetchJson, refreshAll, agent1Agent]);
+  }, [fetchJson, refreshAll, agent1Agent, activeProject]);
 
   const approveAction = useCallback(async (approvalId, approved) => {
     try {
@@ -320,6 +342,41 @@ export default function useCollaboration(apiBase) {
     }
   }, [fetchJson, refreshAll]);
 
+  const createInvite = useCallback(async (permissions, createdBy = "user") => {
+    if (!activeProject?.id) throw new Error("Create a project before inviting external agents.");
+    const result = await fetchJson(`/api/projects/${encodeURIComponent(activeProject.id)}/invite`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ created_by: createdBy, permissions }),
+    });
+    await refreshAll();
+    return result;
+  }, [fetchJson, refreshAll, activeProject]);
+
+  const updateMcpServer = useCallback(async (serverId, patch) => {
+    await fetchJson(`/api/mcp/servers/${encodeURIComponent(serverId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+    await refreshAll();
+  }, [fetchJson, refreshAll]);
+
+  const deleteMcpServer = useCallback(async (serverId) => {
+    await fetchJson(`/api/mcp/servers/${encodeURIComponent(serverId)}`, {
+      method: "DELETE",
+    });
+    await refreshAll();
+  }, [fetchJson, refreshAll]);
+
+  const checkMcpHealth = useCallback(async (serverId) => {
+    return fetchJson(`/api/mcp/servers/${encodeURIComponent(serverId)}/health`);
+  }, [fetchJson]);
+
+  const listMcpTools = useCallback(async (serverId) => {
+    return fetchJson(`/api/mcp/servers/${encodeURIComponent(serverId)}/tools`);
+  }, [fetchJson]);
+
   return {
     // State
     projects,
@@ -331,6 +388,7 @@ export default function useCollaboration(apiBase) {
     modelProviders,
     externals,
     collabTasks,
+    blackboardEntries,
     activeSessions,
     runningAgentIds,
     recentEvents,
@@ -348,6 +406,11 @@ export default function useCollaboration(apiBase) {
     saveAgent,
     deleteAgent,
     saveMcpServer,
+    createInvite,
+    updateMcpServer,
+    deleteMcpServer,
+    checkMcpHealth,
+    listMcpTools,
     refreshAll,
     fetchJson,
   };

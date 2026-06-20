@@ -223,6 +223,9 @@ export const ExternalCard = memo(function ExternalCard({ server, side }) {
     .join("")
     .toUpperCase()
     .slice(0, 2);
+  const status = server.status || (server.enabled ? "active" : "inactive");
+  const capabilityCount = server.capabilities?.length ?? server.tools?.length ?? 0;
+  const statusActive = status === "connected" || status === "active";
 
   return (
     <div className={`collab-agent-card ${side} external`}>
@@ -291,14 +294,27 @@ export const AgentLane = memo(function AgentLane({
             </div>
           )
         ) : (
-          (mcpServers || []).length > 0 ? (
-            mcpServers.map((server) => (
-              <ExternalCard
-                key={server.id || server.name}
-                server={server}
-                side={side}
-              />
-            ))
+          (agents || []).length > 0 || (mcpServers || []).length > 0 ? (
+            <>
+              {(agents || []).map((agent) => (
+                <ExternalCard
+                  key={agent.id || agent.name}
+                  server={{
+                    ...agent,
+                    enabled: agent.status === "connected",
+                    tools: agent.capabilities || [],
+                  }}
+                  side={side}
+                />
+              ))}
+              {(mcpServers || []).map((server) => (
+                <ExternalCard
+                  key={server.id || server.name}
+                  server={server}
+                  side={side}
+                />
+              ))}
+            </>
           ) : (
             <div className="collab-lane-empty">
               <span className="empty-icon">MCP</span>
@@ -350,6 +366,21 @@ export const ActivityFeed = memo(function ActivityFeed({ events, pendingApproval
           <div className="collab-section-label">PENDING APPROVALS</div>
           {pendingApprovals.map((approval) => (
             <div key={approval.id} className="collab-approval-card">
+              <div className="approval-structured">
+                <div className="approval-structured-head">
+                  <span>{approval.request?.tool_name || "Action"}</span>
+                  <strong>{approval.request?.risk_level || "unknown"} risk</strong>
+                </div>
+                <div className="approval-meta-grid">
+                  <span>Agent</span>
+                  <strong>{approval.agent_id || approval.request?.agent_id || "agent"}</strong>
+                  <span>Approval</span>
+                  <strong>{approval.id}</strong>
+                </div>
+                <pre>
+                  {JSON.stringify(approval.request?.input || {}, null, 2).slice(0, 260)}
+                </pre>
+              </div>
               <div className="approval-header">
                 ⚠ {approval.request?.tool_name || "Action"} — {approval.agent_id || "agent"}
               </div>

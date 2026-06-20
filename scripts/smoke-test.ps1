@@ -1,7 +1,8 @@
 param(
     [string]$ApiBase = "http://127.0.0.1:17371",
     [string]$DbPath = "$env:TEMP\agent1-smoke-test.db",
-    [int]$Timeout = 30
+    [int]$Timeout = 30,
+    [switch]$AllowExternalDbPath
 )
 
 $ErrorAction = "Stop"
@@ -19,6 +20,11 @@ Write-Host "Agent1 Smoke Test" -ForegroundColor Cyan
 Write-Host "==================" -ForegroundColor Cyan
 
 $serverProc = $null
+$resolvedTemp = [System.IO.Path]::GetFullPath($env:TEMP)
+$resolvedDbPath = [System.IO.Path]::GetFullPath($DbPath)
+if (-not $AllowExternalDbPath -and -not $resolvedDbPath.StartsWith($resolvedTemp, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "DbPath must be under TEMP unless -AllowExternalDbPath is set: $resolvedDbPath"
+}
 
 try {
     Write-Host "[1/5] Starting server..." -ForegroundColor Yellow

@@ -231,6 +231,8 @@ impl PermissionMode {
 pub struct Session {
     pub id: SessionId,
     pub title: Option<String>,
+    #[serde(default)]
+    pub project_id: Option<ProjectId>,
     pub root_agent_id: AgentId,
     pub status: SessionStatus,
     pub created_at: DateTime<Utc>,

@@ -40,6 +40,7 @@ pub struct CommandRequest {
 
 pub struct WhatsAppService {
     http: Client,
+    sidecar_base: String,
     event_tx: broadcast::Sender<WhatsAppEvent>,
     status: Arc<RwLock<WhatsAppStatus>>,
     pending_commands: mpsc::Sender<IncomingCommand>,
@@ -64,24 +65,31 @@ impl WhatsAppService {
         let (event_tx, _) = broadcast::channel(100);
         let (pending_commands, _) = mpsc::channel(100);
 
-        Self {
-            http: Client::new(),
-            event_tx,
-            status: Arc::new(RwLock::new(WhatsAppStatus {
-                state: "disconnected".to_string(),
-                phone: None,
-                qr: None,
-                error: None,
-            })),
-            pending_commands,
-        }
+        Self::with_parts(event_tx, pending_commands, SIDECAR_BASE.to_string())
     }
 
     pub fn with_commands_channel(pending_commands: mpsc::Sender<IncomingCommand>) -> Self {
         let (event_tx, _) = broadcast::channel(100);
 
+        Self::with_parts(event_tx, pending_commands, SIDECAR_BASE.to_string())
+    }
+
+    #[cfg(test)]
+    fn with_sidecar_base(sidecar_base: impl Into<String>) -> Self {
+        let (event_tx, _) = broadcast::channel(100);
+        let (pending_commands, _) = mpsc::channel(100);
+
+        Self::with_parts(event_tx, pending_commands, sidecar_base.into())
+    }
+
+    fn with_parts(
+        event_tx: broadcast::Sender<WhatsAppEvent>,
+        pending_commands: mpsc::Sender<IncomingCommand>,
+        sidecar_base: String,
+    ) -> Self {
         Self {
             http: Client::new(),
+            sidecar_base,
             event_tx,
             status: Arc::new(RwLock::new(WhatsAppStatus {
                 state: "disconnected".to_string(),
@@ -96,7 +104,7 @@ impl WhatsAppService {
     pub async fn get_status(&self) -> Result<WhatsAppStatus> {
         let resp = self
             .http
-            .get(format!("{}/status", SIDECAR_BASE))
+            .get(format!("{}/status", self.sidecar_base))
             .timeout(std::time::Duration::from_secs(5))
             .send()
             .await;
@@ -128,7 +136,10 @@ impl WhatsAppService {
                 state: "sidecar_offline".to_string(),
                 phone: None,
                 qr: None,
-                error: Some("WhatsApp sidecar is not reachable on 127.0.0.1:17372".to_string()),
+                error: Some(format!(
+                    "WhatsApp sidecar is not reachable on {}",
+                    self.sidecar_base
+                )),
             }),
         }
     }
@@ -136,7 +147,7 @@ impl WhatsAppService {
     pub async fn get_qr_svg(&self) -> Result<Option<String>> {
         let resp = self
             .http
-            .get(format!("{}/qrsvg", SIDECAR_BASE))
+            .get(format!("{}/qrsvg", self.sidecar_base))
             .timeout(std::time::Duration::from_secs(5))
             .send()
             .await;
@@ -153,7 +164,7 @@ impl WhatsAppService {
     pub async fn connect(&self) -> Result<()> {
         let resp = self
             .http
-            .post(format!("{}/connect", SIDECAR_BASE))
+            .post(format!("{}/connect", self.sidecar_base))
             .timeout(std::time::Duration::from_secs(10))
             .send()
             .await?;
@@ -168,7 +179,7 @@ impl WhatsAppService {
 
     pub async fn disconnect(&self) -> Result<()> {
         self.http
-            .post(format!("{}/disconnect", SIDECAR_BASE))
+            .post(format!("{}/disconnect", self.sidecar_base))
             .timeout(std::time::Duration::from_secs(5))
             .send()
             .await?;
@@ -186,7 +197,7 @@ impl WhatsAppService {
 
     pub async fn reset(&self) -> Result<()> {
         self.http
-            .post(format!("{}/reset", SIDECAR_BASE))
+            .post(format!("{}/reset", self.sidecar_base))
             .timeout(std::time::Duration::from_secs(15))
             .send()
             .await?;
@@ -205,7 +216,7 @@ impl WhatsAppService {
     pub async fn send_message(&self, to: &str, text: &str) -> Result<SendMessageResponse> {
         let resp = self
             .http
-            .post(format!("{}/send", SIDECAR_BASE))
+            .post(format!("{}/send", self.sidecar_base))
             .json(&SendMessageRequest {
                 to: to.to_string(),
                 text: text.to_string(),
@@ -221,7 +232,7 @@ impl WhatsAppService {
     pub async fn send_notification(&self, title: &str, body: &str) -> Result<()> {
         let resp = self
             .http
-            .post(format!("{}/notify", SIDECAR_BASE))
+            .post(format!("{}/notify", self.sidecar_base))
             .json(&NotifyRequest {
                 title: title.to_string(),
                 body: body.to_string(),
@@ -241,7 +252,7 @@ impl WhatsAppService {
     pub async fn send_approval(&self, message: &str) -> Result<()> {
         let resp = self
             .http
-            .post(format!("{}/approve", SIDECAR_BASE))
+            .post(format!("{}/approve", self.sidecar_base))
             .json(&serde_json::json!({ "message": message }))
             .timeout(std::time::Duration::from_secs(30))
             .send()
@@ -267,7 +278,7 @@ impl WhatsAppService {
     pub async fn send_command_to_sidecar(&self, text: &str) -> Result<()> {
         let resp = self
             .http
-            .post(format!("{}/command", SIDECAR_BASE))
+            .post(format!("{}/command", self.sidecar_base))
             .json(&CommandRequest {
                 text: text.to_string(),
             })
@@ -332,6 +343,7 @@ impl Clone for WhatsAppService {
     fn clone(&self) -> Self {
         Self {
             http: self.http.clone(),
+            sidecar_base: self.sidecar_base.clone(),
             event_tx: self.event_tx.clone(),
             status: self.status.clone(),
             pending_commands: self.pending_commands.clone(),
@@ -349,7 +361,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_status_when_sidecar_offline() {
-        let service = super::WhatsAppService::new();
+        let service = super::WhatsAppService::with_sidecar_base("http://127.0.0.1:1");
         let status = service.get_status().await.unwrap();
         assert_eq!(status.state, "sidecar_offline");
     }

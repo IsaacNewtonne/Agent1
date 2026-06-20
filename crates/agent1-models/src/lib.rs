@@ -7,7 +7,7 @@ use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{env, path::PathBuf};
+use std::{env, path::PathBuf, time::Duration};
 use tokio::process::Command;
 
 #[async_trait]
@@ -263,7 +263,7 @@ pub struct OllamaProvider {
 impl OllamaProvider {
     pub fn new() -> Self {
         Self {
-            client: Client::new(),
+            client: default_http_client(),
         }
     }
 }
@@ -448,7 +448,7 @@ pub struct OpenAiCompatibleProvider {
 impl OpenAiCompatibleProvider {
     pub fn new() -> Self {
         Self {
-            client: Client::new(),
+            client: default_http_client(),
         }
     }
 }
@@ -467,7 +467,7 @@ pub struct NvidiaProvider {
 impl NvidiaProvider {
     pub fn new() -> Self {
         Self {
-            client: Client::new(),
+            client: default_http_client(),
             api_key: None,
         }
     }
@@ -488,7 +488,7 @@ impl NvidiaProvider {
     #[cfg(test)]
     fn with_api_key(api_key: impl Into<String>) -> Self {
         Self {
-            client: Client::new(),
+            client: default_http_client(),
             api_key: Some(api_key.into()),
         }
     }
@@ -822,6 +822,20 @@ fn map_request_error(context: &str, err: reqwest::Error) -> Agent1Error {
         return Agent1Error::Runtime(format!("{context} endpoint unavailable: {err}"));
     }
     Agent1Error::Runtime(format!("{context} failed: {err}"))
+}
+
+fn default_http_client() -> Client {
+    Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(
+            env::var("AGENT1_MODEL_TIMEOUT_SECONDS")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .filter(|value| *value > 0)
+                .unwrap_or(120),
+        ))
+        .build()
+        .unwrap_or_else(|_| Client::new())
 }
 
 #[cfg(test)]

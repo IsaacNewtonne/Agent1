@@ -75,7 +75,7 @@ mod integration {
         store.save_agent(&agent).await.unwrap();
 
         let session = store
-            .create_session_shell("session_test_agent", Some("Test Session".to_string()))
+            .create_session_shell("session_test_agent", Some("Test Session".to_string()), None)
             .await
             .unwrap();
         assert_eq!(session.root_agent_id, "session_test_agent");
@@ -125,7 +125,7 @@ mod integration {
         let (store, _path) = test_db().await;
 
         let session = store
-            .create_session_shell("test_agent", None)
+            .create_session_shell("test_agent", None, None)
             .await
             .unwrap();
 
@@ -168,7 +168,7 @@ mod integration {
         let (store, _path) = test_db().await;
 
         let session = store
-            .create_session_shell("test_agent", None)
+            .create_session_shell("test_agent", None, None)
             .await
             .unwrap();
 
@@ -232,7 +232,7 @@ mod integration {
         let (store, _path) = test_db().await;
 
         let session = store
-            .create_session_shell("test_agent", None)
+            .create_session_shell("test_agent", None, None)
             .await
             .unwrap();
 

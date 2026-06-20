@@ -63,6 +63,14 @@ jobs:
         working-directory: desktop
         run: npm run build
 
+      - name: Build Tauri bundle
+        working-directory: desktop
+        run: npm run tauri:build
+
+      - name: Smoke test API
+        shell: pwsh
+        run: ./scripts/smoke-test.ps1
+
   lint:
     name: Lint (Security)
     runs-on: windows-latest
@@ -74,8 +82,11 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
       - name: Audit dependencies
-        run: cargo audit || true
+        run: cargo audit
 
       - name: Check for vulnerabilities
-        run: cargo tree --duplicates || true
+        run: cargo tree --duplicates
