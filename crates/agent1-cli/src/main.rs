@@ -934,6 +934,25 @@ struct CrocStatus {
     error: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct StripeCheckoutRequest {
+    project_id: Option<String>,
+    name: Option<String>,
+    description: Option<String>,
+    amount_cents: Option<i64>,
+    currency: Option<String>,
+    success_url: Option<String>,
+    cancel_url: Option<String>,
+    dry_run: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+struct StripeStatus {
+    configured: bool,
+    mode: String,
+    capabilities: Vec<&'static str>,
+}
+
 impl ApiError {
     fn bad_request(message: impl Into<String>) -> Self {
         Self {
@@ -1131,6 +1150,11 @@ async fn run_server(bind: String, db: PathBuf, api_token: Option<String>) -> any
         .route("/.well-known/agent.json", get(api_well_known_agent))
         .route("/api/health", get(api_health))
         .route("/api/croc/status", get(api_croc_status))
+        .route("/api/stripe/status", get(api_stripe_status))
+        .route(
+            "/api/stripe/checkout-session",
+            post(api_stripe_checkout_session),
+        )
         .route("/api/whatsapp/status", get(api_whatsapp_status))
         .route("/api/whatsapp/connect", post(api_whatsapp_connect))
         .route("/api/whatsapp/disconnect", post(api_whatsapp_disconnect))
@@ -1291,6 +1315,24 @@ async fn api_croc_status(
 ) -> Result<Response<Body>, ApiError> {
     require_auth(&headers, &state)?;
     Ok(json_ok(json!(croc_status())))
+}
+
+async fn api_stripe_status(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Response<Body>, ApiError> {
+    require_auth(&headers, &state)?;
+    Ok(json_ok(json!(stripe_status())))
+}
+
+async fn api_stripe_checkout_session(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(body): Json<StripeCheckoutRequest>,
+) -> Result<Response<Body>, ApiError> {
+    require_auth(&headers, &state)?;
+    let result = create_stripe_checkout_session(&state.store, body).await?;
+    Ok(json_ok(result))
 }
 
 async fn api_whatsapp_status(State(state): State<HttpState>) -> Result<Response<Body>, ApiError> {
@@ -2154,6 +2196,180 @@ fn receiver_croc_args(code: &str, relay: Option<&str>, pass: Option<&str>) -> Ve
     }
     args.push(code.to_string());
     args
+}
+
+fn stripe_status() -> StripeStatus {
+    let configured = stripe_secret_key().is_some();
+    StripeStatus {
+        configured,
+        mode: if configured {
+            "live_api_ready".to_string()
+        } else {
+            "dry_run".to_string()
+        },
+        capabilities: vec![
+            "checkout_session",
+            "project_metadata",
+            "agent_revenue_action",
+            "dry_run_without_secret",
+        ],
+    }
+}
+
+async fn create_stripe_checkout_session(
+    store: &SqliteStore,
+    request: StripeCheckoutRequest,
+) -> Result<Value, ApiError> {
+    let project_id = request
+        .project_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .map(str::trim)
+        .map(String::from);
+    if let Some(project_id) = project_id.as_deref() {
+        let project = store.get_project(project_id).await?;
+        if project.collaboration_mode == CollaborationMode::Airgapped {
+            return Err(ApiError::bad_request(
+                "Airgapped policy blocks Stripe checkout creation",
+            ));
+        }
+    }
+
+    let name = request
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("Agent1 Revenue Ops Retainer");
+    let description = request
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("Agent1-created checkout for an AI operations workflow.");
+    let amount_cents = request.amount_cents.unwrap_or(4900).clamp(50, 999_999_99);
+    let currency = request
+        .currency
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("usd")
+        .to_ascii_lowercase();
+    let success_url = request
+        .success_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("http://127.0.0.1:1420/?stripe=success");
+    let cancel_url = request
+        .cancel_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("http://127.0.0.1:1420/?stripe=cancelled");
+    let secret = stripe_secret_key();
+    let dry_run = request.dry_run.unwrap_or(secret.is_none()) || secret.is_none();
+
+    let mut form = vec![
+        ("mode".to_string(), "payment".to_string()),
+        ("success_url".to_string(), success_url.to_string()),
+        ("cancel_url".to_string(), cancel_url.to_string()),
+        ("line_items[0][quantity]".to_string(), "1".to_string()),
+        (
+            "line_items[0][price_data][currency]".to_string(),
+            currency.clone(),
+        ),
+        (
+            "line_items[0][price_data][unit_amount]".to_string(),
+            amount_cents.to_string(),
+        ),
+        (
+            "line_items[0][price_data][product_data][name]".to_string(),
+            name.to_string(),
+        ),
+        (
+            "line_items[0][price_data][product_data][description]".to_string(),
+            description.to_string(),
+        ),
+        ("metadata[agent1_source]".to_string(), "agent1".to_string()),
+    ];
+    if let Some(project_id) = project_id.as_deref() {
+        form.push((
+            "metadata[agent1_project_id]".to_string(),
+            project_id.to_string(),
+        ));
+    }
+
+    if dry_run {
+        return Ok(json!({
+            "mode": "dry_run",
+            "configured": secret.is_some(),
+            "checkout_session": {
+                "id": format!("cs_agent1_dryrun_{}", now().timestamp()),
+                "object": "checkout.session",
+                "status": "open",
+                "currency": currency,
+                "amount_total": amount_cents,
+                "url": "https://checkout.stripe.com/c/pay/agent1-dry-run"
+            },
+            "request_preview": form_to_string(&form),
+            "project_id": project_id
+        }));
+    }
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post("https://api.stripe.com/v1/checkout/sessions")
+        .bearer_auth(secret.expect("checked secret presence"))
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .body(form_to_string(&form))
+        .send()
+        .await
+        .map_err(|err| ApiError::internal(format!("Stripe request failed: {err}")))?;
+    let status = response.status();
+    let value = response
+        .json::<Value>()
+        .await
+        .map_err(|err| ApiError::internal(format!("Stripe response was not JSON: {err}")))?;
+    if !status.is_success() {
+        return Err(ApiError::bad_request(format!(
+            "Stripe returned {status}: {value}"
+        )));
+    }
+    Ok(json!({
+        "mode": "stripe",
+        "configured": true,
+        "checkout_session": value,
+        "project_id": project_id
+    }))
+}
+
+fn stripe_secret_key() -> Option<String> {
+    std::env::var("STRIPE_SECRET_KEY")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| value.starts_with("sk_"))
+}
+
+fn form_to_string(form: &[(String, String)]) -> String {
+    form.iter()
+        .map(|(key, value)| format!("{}={}", percent_encode(key), percent_encode(value)))
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+fn percent_encode(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                encoded.push(byte as char);
+            }
+            b' ' => encoded.push('+'),
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
 }
 
 async fn list_models_http() -> anyhow::Result<Value> {

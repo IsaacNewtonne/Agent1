@@ -2,6 +2,19 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const ACTIVE_PROJECT_KEY = "agent1_active_project";
 
+function displayModelContent(content) {
+  if (typeof content !== "string") return "";
+  const trimmed = content.trim();
+  if (!trimmed.startsWith("{")) return content;
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (typeof parsed.final === "string") return parsed.final;
+  } catch {
+    // Keep the original content when it is not model-action JSON.
+  }
+  return content;
+}
+
 /**
  * Custom hook for collaboration workspace state management.
  * Fetches projects, agents, external agents, and blackboard state.
@@ -21,6 +34,7 @@ export default function useCollaboration(apiBase) {
   const [recentEvents, setRecentEvents] = useState([]);
   const [trace, setTrace] = useState({ messages: [], events: [], approvals: [] });
   const [crocStatus, setCrocStatus] = useState({ available: false, version: "", error: "" });
+  const [stripeStatus, setStripeStatus] = useState({ configured: false, mode: "dry_run", capabilities: [] });
   const [wsState, setWsState] = useState("disconnected");
   const [loading, setLoading] = useState(true);
   const wsRef = useRef(null);
@@ -84,7 +98,9 @@ export default function useCollaboration(apiBase) {
         try {
           const traceData = await fetchJson(`/api/sessions/${encodeURIComponent(latestSession.id)}/trace`);
           setTrace({
+            session: traceData.session || latestSession,
             messages: traceData.messages || [],
+            tool_calls: traceData.tool_calls || [],
             events: traceData.events || [],
             approvals: traceData.approvals || approvalsRes.approvals || [],
           });
@@ -92,7 +108,7 @@ export default function useCollaboration(apiBase) {
           setTrace((prev) => ({ ...prev, approvals: approvalsRes.approvals || [] }));
         }
       } else {
-        setTrace({ messages: [], events: [], approvals: approvalsRes.approvals || [] });
+        setTrace({ session: null, messages: [], tool_calls: [], events: [], approvals: approvalsRes.approvals || [] });
       }
 
       // Try fetching projects (may not exist on older backends)
@@ -151,6 +167,10 @@ export default function useCollaboration(apiBase) {
       fetchJson("/api/croc/status")
         .then((status) => setCrocStatus(status || { available: false }))
         .catch((error) => setCrocStatus({ available: false, error: error.message }));
+
+      fetchJson("/api/stripe/status")
+        .then((status) => setStripeStatus(status || { configured: false, mode: "dry_run", capabilities: [] }))
+        .catch((error) => setStripeStatus({ configured: false, mode: "unavailable", error: error.message, capabilities: [] }));
 
       setLoading(false);
     } catch (error) {
@@ -270,7 +290,7 @@ export default function useCollaboration(apiBase) {
 
   const streamingOutput = useMemo(() => {
     const msgs = (trace.messages || []).filter((m) => m.role === "assistant");
-    return msgs.length > 0 ? msgs[msgs.length - 1].content : "";
+    return msgs.length > 0 ? displayModelContent(msgs[msgs.length - 1].content) : "";
   }, [trace.messages]);
 
   // ─── Actions ───
@@ -431,6 +451,19 @@ export default function useCollaboration(apiBase) {
     return result;
   }, [fetchJson, refreshAll]);
 
+  const createStripeCheckout = useCallback(async (options = {}) => {
+    const result = await fetchJson("/api/stripe/checkout-session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        project_id: activeProject?.id,
+        ...options,
+      }),
+    });
+    await refreshAll();
+    return result;
+  }, [fetchJson, refreshAll, activeProject]);
+
   return {
     // State
     projects,
@@ -449,6 +482,7 @@ export default function useCollaboration(apiBase) {
     recentEvents,
     trace,
     crocStatus,
+    stripeStatus,
     pendingApprovals,
     streamingOutput,
     wsState,
@@ -469,6 +503,7 @@ export default function useCollaboration(apiBase) {
     checkMcpHealth,
     listMcpTools,
     secureSendSession,
+    createStripeCheckout,
     refreshAll,
     fetchJson,
   };

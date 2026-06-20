@@ -28,13 +28,23 @@ if not exist "node_modules" (
 cd /d "%~dp0"
 
 echo [2/4] Starting WhatsApp sidecar in background...
-start /b "WhatsApp Sidecar" cmd /c "cd /d %~dp0whatsapp-sidecar && npm start"
+powershell -NoProfile -Command "try { $r = Invoke-WebRequest -UseBasicParsing http://127.0.0.1:17372/status -TimeoutSec 2; if ($r.StatusCode -lt 500) { exit 0 } else { exit 1 } } catch { exit 1 }" >nul 2>&1
+if %ERRORLEVEL% equ 0 (
+    echo WhatsApp sidecar already running on http://127.0.0.1:17372
+) else (
+    start /b "WhatsApp Sidecar" cmd /c "cd /d %~dp0whatsapp-sidecar && npm start"
+)
 
 echo Waiting for sidecar to start...
 timeout /t 3 /nobreak >nul
 
 echo [3/4] Starting API server in background...
-start /b "Agent1 Server" cmd /c "cargo run --bin agent1 -- server"
+powershell -NoProfile -Command "try { $r = Invoke-WebRequest -UseBasicParsing http://127.0.0.1:17371/api/health -TimeoutSec 2; if ($r.StatusCode -lt 500) { exit 0 } else { exit 1 } } catch { exit 1 }" >nul 2>&1
+if %ERRORLEVEL% equ 0 (
+    echo Agent1 API already running on http://127.0.0.1:17371
+) else (
+    start /b "Agent1 Server" cmd /c "cargo run --bin agent1 -- server"
+)
 
 echo Waiting for server to start...
 timeout /t 3 /nobreak >nul

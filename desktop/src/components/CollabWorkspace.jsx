@@ -52,6 +52,25 @@ function formatEventName(type = "") {
   return String(type).replace(/([A-Z])/g, " $1").trim() || "Event";
 }
 
+function displayModelContent(content) {
+  if (typeof content !== "string") return String(content ?? "");
+  const trimmed = content.trim();
+  if (!trimmed.startsWith("{")) return content;
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (typeof parsed.final === "string") return parsed.final;
+  } catch {
+    // Not model-action JSON; show the original content.
+  }
+  return content;
+}
+
+function gatewayUrl(apiBase, token, agentName = "hermes-agent") {
+  if (!token) return "";
+  const base = String(apiBase || "http://127.0.0.1:17371").replace(/^http/i, "ws").replace(/\/$/, "");
+  return `${base}/gateway/connect?token=${encodeURIComponent(token)}&agent_name=${encodeURIComponent(agentName)}`;
+}
+
 const POLICY_PROFILES = {
   automatic: {
     label: "Automatic",
@@ -104,7 +123,7 @@ function buildSecuritySignals({ approvals, events, externals, mcpServers }) {
   ];
 }
 
-function ProjectInspector({ collab, onClose }) {
+function ProjectInspector({ collab, apiBase, onClose }) {
   const trace = collab.trace || {};
   const session = trace.session || {};
   const messages = trace.messages || [];
@@ -120,7 +139,9 @@ function ProjectInspector({ collab, onClose }) {
     mcpServers: collab.mcpServers || [],
   });
   const [secureSendState, setSecureSendState] = useState({ status: "idle", result: null, error: "" });
+  const [stripeState, setStripeState] = useState({ status: "idle", result: null, error: "" });
   const secureSendReady = Boolean(session.id) && Boolean(collab.crocStatus?.available);
+  const stripeMode = collab.stripeStatus?.mode || "dry_run";
 
   const handleSecureSend = async () => {
     if (!session.id || secureSendState.status === "sending") return;
@@ -141,6 +162,33 @@ function ProjectInspector({ collab, onClose }) {
       setSecureSendState((state) => ({ ...state, status: "copied" }));
     } catch {
       setSecureSendState((state) => ({ ...state, status: "sent" }));
+    }
+  };
+
+  const handleCreateCheckout = async () => {
+    if (stripeState.status === "creating") return;
+    setStripeState({ status: "creating", result: null, error: "" });
+    try {
+      const result = await collab.createStripeCheckout({
+        name: "Agent1 Revenue Ops Retainer",
+        description: "AI operations workspace managed by Agent1 agents.",
+        amount_cents: 4900,
+        currency: "usd",
+      });
+      setStripeState({ status: "created", result, error: "" });
+    } catch (error) {
+      setStripeState({ status: "error", result: null, error: error.message });
+    }
+  };
+
+  const handleCopyCheckout = async () => {
+    const url = stripeState.result?.checkout_session?.url;
+    if (!url) return;
+    try {
+      await navigator.clipboard.writeText(url);
+      setStripeState((state) => ({ ...state, status: "copied" }));
+    } catch {
+      setStripeState((state) => ({ ...state, status: "created" }));
     }
   };
 
@@ -230,12 +278,65 @@ function ProjectInspector({ collab, onClose }) {
 
       <div className="inspector-columns">
         <section>
+          <div className="collab-section-label">REVENUE OPS</div>
+          <div className="ops-card stripe">
+            <div className="ops-card-head">
+              <div>
+                <strong>Stripe Checkout</strong>
+                <span>{collab.stripeStatus?.configured ? "Live API ready" : "Dry-run mode"}</span>
+              </div>
+              <button
+                type="button"
+                className="btn-confirm small"
+                onClick={handleCreateCheckout}
+                disabled={!collab.activeProject || stripeState.status === "creating"}
+              >
+                {stripeState.status === "creating" ? "Creating..." : "Create Checkout"}
+              </button>
+            </div>
+            <div className="ops-kv">
+              <span>Mode</span><strong>{stripeMode}</strong>
+              <span>Amount</span><strong>$49.00 USD</strong>
+              <span>Project</span><strong>{collab.activeProject?.name || "none"}</strong>
+            </div>
+            {stripeState.result?.checkout_session?.url && (
+              <div className="ops-command">
+                <code>{stripeState.result.checkout_session.url}</code>
+                <button type="button" className="btn-ghost small" onClick={handleCopyCheckout}>
+                  {stripeState.status === "copied" ? "Copied" : "Copy"}
+                </button>
+              </div>
+            )}
+            {stripeState.error && <span className="field-hint error">{stripeState.error}</span>}
+          </div>
+        </section>
+
+        <section>
+          <div className="collab-section-label">HERMES GATEWAY</div>
+          <div className="ops-card hermes">
+            <div className="ops-card-head">
+              <div>
+                <strong>Local or External Hermes</strong>
+                <span>Project-scoped WebSocket agent access</span>
+              </div>
+            </div>
+            <div className="ops-kv">
+              <span>Gateway</span><strong>{apiBase.replace(/^http/i, "ws")}/gateway/connect</strong>
+              <span>Open invites</span><strong>{(collab.inviteTokens || []).filter((invite) => !invite.used_by).length}</strong>
+              <span>Permissions</span><strong>blackboard, tasks, artifacts</strong>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <div className="inspector-columns">
+        <section>
           <div className="collab-section-label">MESSAGES</div>
           <div className="inspector-list">
             {messages.slice(-8).map((message) => (
               <article key={message.id} className="inspector-row">
                 <strong>{message.role}</strong>
-                <p>{String(message.content || "").slice(0, 360)}</p>
+                <p>{displayModelContent(message.content).slice(0, 360)}</p>
               </article>
             ))}
             {!messages.length && <div className="inspector-empty">No messages yet.</div>}
@@ -391,6 +492,7 @@ export default function CollabWorkspace() {
   const agent1ModelProviderError = selectedAgent1Provider?.error || "";
   const activePolicyMode = collab.activeProject?.collaboration_mode || "automatic";
   const isAirgapped = activePolicyMode === "airgapped";
+  const hermesInvite = inviteResult || (collab.inviteTokens || []).find((invite) => !invite.used_by) || null;
 
   // ─── Agent1 config ───
 
@@ -625,6 +727,17 @@ export default function CollabWorkspace() {
       setExternalFormStatus("Invite token copied.");
     } catch {
       setExternalFormStatus("Copy failed. Select the token manually.");
+    }
+  };
+
+  const handleCopyGateway = async (invite) => {
+    const url = gatewayUrl(settings.apiBase, invite?.token);
+    if (!url) return;
+    try {
+      await navigator.clipboard?.writeText(url);
+      setExternalFormStatus("Hermes gateway URL copied.");
+    } catch {
+      setExternalFormStatus("Copy failed. Select the gateway URL manually.");
     }
   };
 
@@ -1027,6 +1140,16 @@ export default function CollabWorkspace() {
                   <code>{inviteResult.token}</code>
                 </div>
               )}
+              <div className="hermes-connect-card">
+                <div className="collab-section-label">HERMES AGENT CONNECT</div>
+                <p>Local and external Hermes agents connect over Agent1's project-scoped gateway with the invite token above.</p>
+                <div className="hermes-command-grid">
+                  <span>Local</span>
+                  <code>{hermesInvite?.token ? gatewayUrl(settings.apiBase, hermesInvite.token, "local-hermes") : "Generate an invite to create a local Hermes URL"}</code>
+                  <span>External</span>
+                  <code>{hermesInvite?.token ? gatewayUrl(settings.apiBase, hermesInvite.token, "external-hermes") : "Generate an invite to create an external Hermes URL"}</code>
+                </div>
+              </div>
               <div className="invite-manager">
                 {(collab.inviteTokens || []).length > 0 ? (
                   (collab.inviteTokens || []).map((invite) => (
@@ -1038,6 +1161,7 @@ export default function CollabWorkspace() {
                       </div>
                       <div className="invite-manager-actions">
                         <button type="button" className="btn-ghost" onClick={() => handleCopyInvite(invite)}>Copy</button>
+                        <button type="button" className="btn-ghost" onClick={() => handleCopyGateway(invite)}>Gateway</button>
                         <button type="button" className="btn-danger" onClick={() => handleRevokeInvite(invite)}>Revoke</button>
                       </div>
                     </article>
@@ -1209,7 +1333,7 @@ export default function CollabWorkspace() {
       </div>
 
       {inspectorOpen && (
-        <ProjectInspector collab={collab} onClose={() => setInspectorOpen(false)} />
+        <ProjectInspector collab={collab} apiBase={settings.apiBase} onClose={() => setInspectorOpen(false)} />
       )}
     </div>
   );
