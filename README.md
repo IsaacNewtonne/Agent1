@@ -14,6 +14,10 @@ The current app centers on the **Hybrid Collaboration Workspace**: create a proj
 - 🛡️ **Permissions and approvals**: local tools use explicit permission policies, external agents use project-scoped permissions, and pending approvals appear in the activity area.
 - 🧠 **Model providers**: supports OpenCode, Ollama, OpenAI-compatible endpoints, and NVIDIA NIM.
 - ⚡ **Live runtime**: sessions, events, approvals, projects, and model options are served through the local API.
+- 🧠 **Persistent memory**: semantic vector storage with cosine similarity search. Agent1 recalls relevant past outcomes before planning.
+- 📊 **Hierarchical planning**: decompose goals into main steps with nested sub-steps, executed as independent sub-plans.
+- 🔄 **Self-critique loop**: each step is reviewed by a critic agent before marking complete.
+- 💡 **Proactive suggestions**: system generates follow-up suggestions for failed or incomplete steps, surfaced in the Memory panel.
 
 ## Simple User Path
 
@@ -85,6 +89,8 @@ The current app centers on the **Hybrid Collaboration Workspace**: create a proj
 | 🗄️ Database | `crates/agent1-db/` | SQLite persistence for agents, sessions, projects, events, approvals, and collaboration records. |
 | 🧭 Collaboration | `crates/agent1-collab/` | Project state, collaboration modes, blackboard, tasks, and external agent records. |
 | 🌉 Gateway | `crates/agent1-gateway/` | Invite-token flow and project-scoped external agent access. |
+| 🧠 Memory | `crates/agent1-memory/` | Semantic vector storage with cosine similarity search for persistent memory and suggestions. |
+| 🎯 Orchestrator | `crates/agent1-orchestrator/` | Hierarchical planning, step execution, self-critique loop, and memory integration. |
 
 ## API Highlights
 
@@ -106,6 +112,11 @@ The current app centers on the **Hybrid Collaboration Workspace**: create a proj
 | 💬 `POST /api/sessions/run` | Run Agent1 or another agent. |
 | 🔎 `GET /api/sessions/{id}/trace` | Inspect messages, events, tool calls, and approvals for a session. |
 | ⚡ `GET /ws/events` | Receive live runtime events. |
+| 🔍 `GET /api/memory?query=...` | Search semantic memory for relevant past outcomes. |
+| ✍️ `POST /api/memory` | Write a new memory entry. |
+| 💡 `GET /api/suggestions` | List pending proactive suggestions. |
+| 💡 `POST /api/suggestions/{id}/accept` | Accept a suggestion. |
+| 💡 `POST /api/suggestions/{id}/dismiss` | Dismiss a suggestion. |
 
 ## CLI Commands
 
