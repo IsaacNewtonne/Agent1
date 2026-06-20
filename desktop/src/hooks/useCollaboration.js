@@ -20,6 +20,7 @@ export default function useCollaboration(apiBase) {
   const [activeSessions, setActiveSessions] = useState([]);
   const [recentEvents, setRecentEvents] = useState([]);
   const [trace, setTrace] = useState({ messages: [], events: [], approvals: [] });
+  const [crocStatus, setCrocStatus] = useState({ available: false, version: "", error: "" });
   const [wsState, setWsState] = useState("disconnected");
   const [loading, setLoading] = useState(true);
   const wsRef = useRef(null);
@@ -146,6 +147,10 @@ export default function useCollaboration(apiBase) {
             modelRefreshRef.current = false;
           });
       }
+
+      fetchJson("/api/croc/status")
+        .then((status) => setCrocStatus(status || { available: false }))
+        .catch((error) => setCrocStatus({ available: false, error: error.message }));
 
       setLoading(false);
     } catch (error) {
@@ -416,6 +421,16 @@ export default function useCollaboration(apiBase) {
     return fetchJson(`/api/mcp/servers/${encodeURIComponent(serverId)}/tools`);
   }, [fetchJson]);
 
+  const secureSendSession = useCallback(async (sessionId, options = {}) => {
+    const result = await fetchJson(`/api/sessions/${encodeURIComponent(sessionId)}/secure-send`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(options),
+    });
+    await refreshAll();
+    return result;
+  }, [fetchJson, refreshAll]);
+
   return {
     // State
     projects,
@@ -433,6 +448,7 @@ export default function useCollaboration(apiBase) {
     runningAgentIds,
     recentEvents,
     trace,
+    crocStatus,
     pendingApprovals,
     streamingOutput,
     wsState,
@@ -452,6 +468,7 @@ export default function useCollaboration(apiBase) {
     deleteMcpServer,
     checkMcpHealth,
     listMcpTools,
+    secureSendSession,
     refreshAll,
     fetchJson,
   };

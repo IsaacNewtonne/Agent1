@@ -1009,6 +1009,64 @@
   white-space: nowrap;
 }
 
+.secure-send-card {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid rgba(73, 201, 255, 0.16);
+  border-radius: 12px;
+  background: rgba(4, 10, 22, 0.58);
+}
+
+.secure-send-card > div:first-child {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.secure-send-card strong {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.secure-send-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  border-radius: 50%;
+  background: var(--accent-danger);
+  box-shadow: 0 0 12px rgba(255, 105, 105, 0.42);
+}
+
+.secure-send-dot.ready {
+  background: var(--accent-primary);
+  box-shadow: 0 0 12px rgba(77, 231, 212, 0.42);
+}
+
+.secure-send-command {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.secure-send-command code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--accent-primary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
 .approval-structured pre {
   max-height: 96px;
   margin: 0;

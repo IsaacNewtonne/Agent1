@@ -920,6 +920,20 @@ struct ApiError {
     message: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct SecureSendRequest {
+    format: Option<String>,
+    relay: Option<String>,
+    pass: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct CrocStatus {
+    available: bool,
+    version: Option<String>,
+    error: Option<String>,
+}
+
 impl ApiError {
     fn bad_request(message: impl Into<String>) -> Self {
         Self {
@@ -1100,6 +1114,10 @@ async fn run_server(bind: String, db: PathBuf, api_token: Option<String>) -> any
         )
         .route("/api/sessions/{session_id}/trace", get(api_session_trace))
         .route(
+            "/api/sessions/{session_id}/secure-send",
+            post(api_session_secure_send),
+        )
+        .route(
             "/api/sessions/{session_id}/cancel",
             post(api_session_cancel),
         )
@@ -1112,6 +1130,7 @@ async fn run_server(bind: String, db: PathBuf, api_token: Option<String>) -> any
         .route("/ws/events", get(ws_events))
         .route("/.well-known/agent.json", get(api_well_known_agent))
         .route("/api/health", get(api_health))
+        .route("/api/croc/status", get(api_croc_status))
         .route("/api/whatsapp/status", get(api_whatsapp_status))
         .route("/api/whatsapp/connect", post(api_whatsapp_connect))
         .route("/api/whatsapp/disconnect", post(api_whatsapp_disconnect))
@@ -1264,6 +1283,14 @@ async fn api_not_found() -> Result<Response<Body>, ApiError> {
 
 async fn api_health() -> Result<Response<Body>, ApiError> {
     Ok(json_ok(json!({"ok": true, "service": "agent1-api"})))
+}
+
+async fn api_croc_status(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Response<Body>, ApiError> {
+    require_auth(&headers, &state)?;
+    Ok(json_ok(json!(croc_status())))
 }
 
 async fn api_whatsapp_status(State(state): State<HttpState>) -> Result<Response<Body>, ApiError> {
@@ -1702,6 +1729,17 @@ async fn api_session_trace(
     ))
 }
 
+async fn api_session_secure_send(
+    Path(session_id): Path<String>,
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(body): Json<SecureSendRequest>,
+) -> Result<Response<Body>, ApiError> {
+    require_auth(&headers, &state)?;
+    let result = secure_send_session_export(&session_id, &state.store, body).await?;
+    Ok(json_ok(result))
+}
+
 async fn api_session_cancel(
     Path(session_id): Path<String>,
     State(state): State<HttpState>,
@@ -1923,6 +1961,199 @@ async fn session_trace_http(session_id: &str, store: &SqliteStore) -> anyhow::Re
         "events": events,
         "approvals": approvals
     }))
+}
+
+async fn secure_send_session_export(
+    session_id: &str,
+    store: &SqliteStore,
+    request: SecureSendRequest,
+) -> Result<Value, ApiError> {
+    let session = store.get_session(session_id).await?;
+    if let Some(project_id) = &session.project_id {
+        let project = store.get_project(project_id).await?;
+        if project.collaboration_mode == CollaborationMode::Airgapped {
+            return Err(ApiError::bad_request(
+                "Airgapped policy blocks network-based secure send",
+            ));
+        }
+    }
+
+    let status = croc_status();
+    if !status.available {
+        return Err(ApiError::bad_request(status.error.unwrap_or_else(|| {
+            "croc is not installed or not available on PATH".to_string()
+        })));
+    }
+
+    let format = request.format.unwrap_or_else(|| "markdown".to_string());
+    let extension = match format.as_str() {
+        "json" => "json",
+        "markdown" | "md" => "md",
+        other => {
+            return Err(ApiError::bad_request(format!(
+                "unsupported export format `{other}`; use `markdown` or `json`"
+            )));
+        }
+    };
+    let rendered = render_session_export(store, session_id, &format).await?;
+    let export_dir = PathBuf::from(".agent1").join("exports");
+    tokio::fs::create_dir_all(&export_dir)
+        .await
+        .map_err(|err| ApiError::internal(format!("failed to create export directory: {err}")))?;
+    let export_path = export_dir.join(format!(
+        "session-{}.{}",
+        filename_token(session_id),
+        extension
+    ));
+    tokio::fs::write(&export_path, rendered)
+        .await
+        .map_err(|err| ApiError::internal(format!("failed to write session export: {err}")))?;
+
+    let code = secure_send_code(session_id);
+    let mut args = Vec::new();
+    if let Some(relay) = request
+        .relay
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        args.push("--relay".to_string());
+        args.push(relay.trim().to_string());
+    }
+    if let Some(pass) = request
+        .pass
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        args.push("--pass".to_string());
+        args.push(pass.trim().to_string());
+    }
+    args.push("--disable-clipboard".to_string());
+    args.push("send".to_string());
+    args.push("--code".to_string());
+    args.push(code.clone());
+    args.push(export_path.to_string_lossy().to_string());
+
+    let mut child = StdCommand::new("croc")
+        .args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|err| {
+            if err.kind() == std::io::ErrorKind::NotFound {
+                ApiError::bad_request("croc is not installed or not available on PATH")
+            } else {
+                ApiError::internal(format!("failed to start croc: {err}"))
+            }
+        })?;
+    let pid = child.id();
+    tokio::task::spawn_blocking(move || {
+        let _ = child.wait();
+    });
+
+    let receiver_args =
+        receiver_croc_args(&code, request.relay.as_deref(), request.pass.as_deref());
+    Ok(json!({
+        "session_id": session_id,
+        "code": code,
+        "path": export_path,
+        "pid": pid,
+        "receiver_command": format!("croc {}", receiver_args.join(" ")),
+        "format": format,
+        "relay": request.relay,
+        "croc_version": status.version
+    }))
+}
+
+async fn render_session_export(
+    store: &SqliteStore,
+    session_id: &str,
+    format: &str,
+) -> anyhow::Result<String> {
+    let session_record = store.get_session(session_id).await?;
+    let messages = store.session_messages(session_id).await?;
+    let events = store.session_events(session_id).await?;
+    let tool_calls = store.session_tool_calls(session_id).await?;
+    match format {
+        "json" => Ok(serde_json::to_string_pretty(&json!({
+            "session": session_record,
+            "messages": messages,
+            "events": events,
+            "tool_calls": tool_calls
+        }))?),
+        "markdown" | "md" => {
+            render_session_markdown(&session_record, &messages, &events, &tool_calls)
+        }
+        other => Err(anyhow::anyhow!(
+            "unsupported export format `{other}`; use `markdown` or `json`"
+        )),
+    }
+}
+
+fn croc_status() -> CrocStatus {
+    match StdCommand::new("croc").arg("--version").output() {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            CrocStatus {
+                available: true,
+                version: Some(if stdout.is_empty() { stderr } else { stdout }),
+                error: None,
+            }
+        }
+        Ok(output) => CrocStatus {
+            available: false,
+            version: None,
+            error: Some(format!(
+                "croc --version exited with status {}",
+                output.status
+            )),
+        },
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => CrocStatus {
+            available: false,
+            version: None,
+            error: Some("croc is not installed or not available on PATH".to_string()),
+        },
+        Err(err) => CrocStatus {
+            available: false,
+            version: None,
+            error: Some(format!("failed to check croc: {err}")),
+        },
+    }
+}
+
+fn secure_send_code(session_id: &str) -> String {
+    let suffix = filename_token(session_id);
+    let suffix = suffix.chars().rev().take(6).collect::<String>();
+    format!("agent1-{}-{}", suffix, now().timestamp())
+}
+
+fn filename_token(value: &str) -> String {
+    let token = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    token.trim_matches('-').chars().take(80).collect()
+}
+
+fn receiver_croc_args(code: &str, relay: Option<&str>, pass: Option<&str>) -> Vec<String> {
+    let mut args = Vec::new();
+    if let Some(relay) = relay.filter(|value| !value.trim().is_empty()) {
+        args.push("--relay".to_string());
+        args.push(relay.trim().to_string());
+    }
+    if let Some(pass) = pass.filter(|value| !value.trim().is_empty()) {
+        args.push("--pass".to_string());
+        args.push(pass.trim().to_string());
+    }
+    args.push(code.to_string());
+    args
 }
 
 async fn list_models_http() -> anyhow::Result<Value> {

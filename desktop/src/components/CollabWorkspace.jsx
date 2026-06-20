@@ -119,6 +119,30 @@ function ProjectInspector({ collab, onClose }) {
     externals: collab.externals || [],
     mcpServers: collab.mcpServers || [],
   });
+  const [secureSendState, setSecureSendState] = useState({ status: "idle", result: null, error: "" });
+  const secureSendReady = Boolean(session.id) && Boolean(collab.crocStatus?.available);
+
+  const handleSecureSend = async () => {
+    if (!session.id || secureSendState.status === "sending") return;
+    setSecureSendState({ status: "sending", result: null, error: "" });
+    try {
+      const result = await collab.secureSendSession(session.id, { format: "markdown" });
+      setSecureSendState({ status: "sent", result, error: "" });
+    } catch (error) {
+      setSecureSendState({ status: "error", result: null, error: error.message });
+    }
+  };
+
+  const handleCopyReceive = async () => {
+    const command = secureSendState.result?.receiver_command;
+    if (!command) return;
+    try {
+      await navigator.clipboard.writeText(command);
+      setSecureSendState((state) => ({ ...state, status: "copied" }));
+    } catch {
+      setSecureSendState((state) => ({ ...state, status: "sent" }));
+    }
+  };
 
   return (
     <aside className="project-inspector glass-panel" role="dialog" aria-label="Project inspector">
@@ -138,6 +162,33 @@ function ProjectInspector({ collab, onClose }) {
             <span>Status</span><strong>{session.status || "idle"}</strong>
             <span>Agent</span><strong>{session.root_agent_id || collab.agent1Agent?.id || "agent1"}</strong>
             <span>Project</span><strong>{session.project_id || collab.activeProject?.id || "unbound"}</strong>
+          </div>
+          <div className="secure-send-card">
+            <div>
+              <span className={`secure-send-dot ${collab.crocStatus?.available ? "ready" : "missing"}`} />
+              <strong>{collab.crocStatus?.available ? "croc ready" : "croc unavailable"}</strong>
+            </div>
+            <button
+              type="button"
+              className="btn-confirm small"
+              disabled={!secureSendReady || secureSendState.status === "sending"}
+              onClick={handleSecureSend}
+            >
+              {secureSendState.status === "sending" ? "Starting..." : "Secure Send"}
+            </button>
+            {secureSendState.result?.receiver_command && (
+              <div className="secure-send-command">
+                <code>{secureSendState.result.receiver_command}</code>
+                <button type="button" className="btn-ghost small" onClick={handleCopyReceive}>
+                  {secureSendState.status === "copied" ? "Copied" : "Copy"}
+                </button>
+              </div>
+            )}
+            {(secureSendState.error || (!collab.crocStatus?.available && collab.crocStatus?.error)) && (
+              <span className="field-hint error">
+                {secureSendState.error || collab.crocStatus.error}
+              </span>
+            )}
           </div>
         </section>
 
