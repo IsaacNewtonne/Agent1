@@ -14,6 +14,7 @@ export default function useCollaboration(apiBase) {
   const [mcpServers, setMcpServers] = useState([]);
   const [modelProviders, setModelProviders] = useState([]);
   const [externals, setExternals] = useState([]);
+  const [inviteTokens, setInviteTokens] = useState([]);
   const [collabTasks, setCollabTasks] = useState([]);
   const [blackboardEntries, setBlackboardEntries] = useState([]);
   const [activeSessions, setActiveSessions] = useState([]);
@@ -102,6 +103,7 @@ export default function useCollaboration(apiBase) {
           localStorage.removeItem(ACTIVE_PROJECT_KEY);
           setActiveProjectState(null);
           setExternals([]);
+          setInviteTokens([]);
           setCollabTasks([]);
           setBlackboardEntries([]);
         } else {
@@ -114,12 +116,14 @@ export default function useCollaboration(apiBase) {
           setActiveProjectState(selected);
 
           const projectId = encodeURIComponent(selected.id);
-          const [externalsRes, tasksRes, blackboardRes] = await Promise.all([
+          const [externalsRes, invitesRes, tasksRes, blackboardRes] = await Promise.all([
             fetchJson(`/api/projects/${projectId}/externals`).catch(() => ({ externals: [] })),
+            fetchJson(`/api/projects/${projectId}/invites`).catch(() => ({ invites: [] })),
             fetchJson(`/api/projects/${projectId}/tasks`).catch(() => ({ tasks: [] })),
             fetchJson(`/api/projects/${projectId}/blackboard`).catch(() => ({ entries: [] })),
           ]);
           setExternals(externalsRes.externals || []);
+          setInviteTokens(invitesRes.invites || []);
           setCollabTasks(tasksRes.tasks || []);
           setBlackboardEntries(blackboardRes.entries || []);
         }
@@ -128,6 +132,7 @@ export default function useCollaboration(apiBase) {
         setProjects([]);
         setActiveProjectState(null);
         setExternals([]);
+        setInviteTokens([]);
         setCollabTasks([]);
         setBlackboardEntries([]);
       }
@@ -173,12 +178,24 @@ export default function useCollaboration(apiBase) {
   useEffect(() => {
     const wsBase = apiBase.replace(/^http/i, "ws");
     const ws = new WebSocket(`${wsBase}/ws/events`);
+    let disposed = false;
     wsRef.current = ws;
 
-    ws.addEventListener("open", () => setWsState("connected"));
-    ws.addEventListener("close", () => setWsState("disconnected"));
-    ws.addEventListener("error", () => setWsState("error"));
-    ws.addEventListener("message", (event) => {
+    const handleOpen = () => {
+      if (disposed) {
+        ws.close();
+        return;
+      }
+      setWsState("connected");
+    };
+    const handleClose = () => {
+      if (!disposed) setWsState("disconnected");
+    };
+    const handleError = () => {
+      if (!disposed) setWsState("error");
+    };
+    const handleMessage = (event) => {
+      if (disposed) return;
       try {
         const data = JSON.parse(event.data);
         const runtimeEvent = data.type === "event" && data.event ? data.event : data;
@@ -198,11 +215,25 @@ export default function useCollaboration(apiBase) {
           }
         }
       } catch { /* ignore malformed */ }
-    });
+    };
+
+    ws.addEventListener("open", handleOpen);
+    ws.addEventListener("close", handleClose);
+    ws.addEventListener("error", handleError);
+    ws.addEventListener("message", handleMessage);
 
     return () => {
-      ws.close();
-      wsRef.current = null;
+      disposed = true;
+      if (wsRef.current === ws) wsRef.current = null;
+      ws.removeEventListener("open", handleOpen);
+      ws.removeEventListener("close", handleClose);
+      ws.removeEventListener("error", handleError);
+      ws.removeEventListener("message", handleMessage);
+      if (ws.readyState === WebSocket.CONNECTING) {
+        ws.onopen = () => ws.close();
+      } else if (ws.readyState === WebSocket.OPEN) {
+        ws.close();
+      }
     };
   }, [apiBase, refreshAll]);
 
@@ -353,6 +384,14 @@ export default function useCollaboration(apiBase) {
     return result;
   }, [fetchJson, refreshAll, activeProject]);
 
+  const revokeInvite = useCallback(async (token) => {
+    if (!activeProject?.id) throw new Error("No active project.");
+    await fetchJson(`/api/projects/${encodeURIComponent(activeProject.id)}/invites/${encodeURIComponent(token)}`, {
+      method: "DELETE",
+    });
+    await refreshAll();
+  }, [fetchJson, refreshAll, activeProject]);
+
   const updateMcpServer = useCallback(async (serverId, patch) => {
     await fetchJson(`/api/mcp/servers/${encodeURIComponent(serverId)}`, {
       method: "PATCH",
@@ -387,6 +426,7 @@ export default function useCollaboration(apiBase) {
     mcpServers,
     modelProviders,
     externals,
+    inviteTokens,
     collabTasks,
     blackboardEntries,
     activeSessions,
@@ -407,6 +447,7 @@ export default function useCollaboration(apiBase) {
     deleteAgent,
     saveMcpServer,
     createInvite,
+    revokeInvite,
     updateMcpServer,
     deleteMcpServer,
     checkMcpHealth,

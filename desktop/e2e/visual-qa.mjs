@@ -43,6 +43,7 @@ async function runViewport(name, width, height) {
           cw: el.clientWidth,
         };
       })
+      .filter((r) => !String(r.cls).includes("sr-only"))
       .filter((r) => r.w > 0 && r.h > 0 && (r.x < -2 || r.x + r.w > innerWidth + 2 || r.sw > r.cw + 2))
       .slice(0, 20);
     return {
@@ -88,6 +89,18 @@ async function runInteractions() {
     }
   }
 
+  await record("create project if empty", async () => {
+    const createButton = page.getByRole("button", { name: /create project/i }).first();
+    if (!(await createButton.isVisible().catch(() => false))) return;
+    await createButton.click();
+    await page.locator("#create-project-name").fill("QA Project");
+    await page.getByRole("button", { name: /^create$/i }).click();
+    await page.locator(".project-switcher select").waitFor({ timeout: 6000 });
+    await page.waitForFunction(() => {
+      const select = document.querySelector(".project-switcher select");
+      return select && select.value;
+    });
+  });
   await record("open inspector", async () => {
     await page.getByRole("button", { name: /inspect/i }).click();
     await page.getByText("Project timeline").waitFor({ timeout: 5000 });
@@ -114,6 +127,17 @@ async function runInteractions() {
     await page.getByText("MCP MANAGER").waitFor({ timeout: 8000 });
     await page.screenshot({ path: "../qa-mcp-manager.png", fullPage: true });
   });
+  await record("mcp tools drawer", async () => {
+    await page.getByRole("button", { name: /^tools$/i }).first().click();
+    await page.locator(".mcp-tools-drawer").waitFor({ timeout: 8000 });
+  });
+  await record("duplicate mcp blocked", async () => {
+    await page.getByLabel("Name").fill("qa-test-server");
+    await page.getByLabel("Command").fill("qa-command-does-not-exist");
+    await page.getByLabel(/Args/).fill("--version");
+    await page.getByRole("button", { name: /add server/i }).click();
+    await page.getByText("Duplicate MCP server already exists").waitFor({ timeout: 5000 });
+  });
   await record("mcp health action", async () => {
     await page.getByRole("button", { name: /health/i }).first().click();
     await page.waitForTimeout(1200);
@@ -135,6 +159,7 @@ async function runInteractions() {
           cw: el.clientWidth,
         };
       })
+      .filter((r) => !String(r.cls).includes("sr-only"))
       .filter((r) => r.w > 0 && (r.x < -2 || r.x + r.w > innerWidth + 2 || r.sw > r.cw + 2))
       .slice(0, 20),
   }));

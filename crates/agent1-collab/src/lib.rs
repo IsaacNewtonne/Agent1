@@ -184,6 +184,8 @@ impl CollaborationEngine {
             CollaborationMode::Structured => CollabBehavior::PlanThenDelegate,
             CollaborationMode::Fast => CollabBehavior::DelegatedParallel,
             CollaborationMode::Careful => CollabBehavior::SupervisedApproval,
+            CollaborationMode::Enterprise => CollabBehavior::SupervisedApproval,
+            CollaborationMode::Airgapped => CollabBehavior::PlanThenDelegate,
         };
 
         self.emit_event(

@@ -1136,6 +1136,11 @@ async fn run_server(bind: String, db: PathBuf, api_token: Option<String>) -> any
             delete(api_projects_remove_agent),
         )
         .route("/api/projects/{id}/invite", post(api_projects_invite))
+        .route("/api/projects/{id}/invites", get(api_projects_invites))
+        .route(
+            "/api/projects/{id}/invites/{token}",
+            delete(api_projects_invite_revoke),
+        )
         .route("/api/projects/{id}/externals", get(api_projects_externals))
         .route(
             "/api/projects/{id}/externals/{ext_id}",
@@ -1446,6 +1451,18 @@ async fn api_mcp_servers_create(
     Json(body): Json<Value>,
 ) -> Result<Response<Body>, ApiError> {
     require_auth(&headers, &state)?;
+    if let Some(project_id) = body
+        .get("project_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+    {
+        let project = state.store.get_project(project_id).await?;
+        if project.collaboration_mode == CollaborationMode::Airgapped {
+            return Err(ApiError::bad_request(
+                "Airgapped policy blocks MCP server changes",
+            ));
+        }
+    }
     let name = body
         .get("name")
         .and_then(Value::as_str)
@@ -1474,6 +1491,17 @@ async fn api_mcp_servers_create(
         })
         .unwrap_or_default();
     let enabled = body.get("enabled").and_then(Value::as_bool).unwrap_or(true);
+    let existing_servers = state.store.list_mcp_servers().await?;
+    if existing_servers.iter().any(|server| {
+        server.name.eq_ignore_ascii_case(name)
+            && server.transport == transport
+            && server.command.as_deref() == command
+            && server.args == args
+    }) {
+        return Err(ApiError::bad_request(
+            "MCP server with the same name, transport, command, and args already exists",
+        ));
+    }
     let timestamp = now();
     let server = McpServerConfig {
         id: new_id("mcp"),
@@ -2292,6 +2320,8 @@ async fn api_projects_create(
         "structured" => CollaborationMode::Structured,
         "fast" => CollaborationMode::Fast,
         "careful" => CollaborationMode::Careful,
+        "enterprise" => CollaborationMode::Enterprise,
+        "airgapped" => CollaborationMode::Airgapped,
         _ => CollaborationMode::Automatic,
     };
 
@@ -2326,6 +2356,8 @@ async fn api_projects_update(
             "structured" => CollaborationMode::Structured,
             "fast" => CollaborationMode::Fast,
             "careful" => CollaborationMode::Careful,
+            "enterprise" => CollaborationMode::Enterprise,
+            "airgapped" => CollaborationMode::Airgapped,
             _ => CollaborationMode::Automatic,
         };
         state
@@ -2386,11 +2418,23 @@ async fn api_projects_invite(
     Json(body): Json<Value>,
 ) -> Result<Response<Body>, ApiError> {
     require_auth(&headers, &state)?;
+    let project = state.store.get_project(&id).await?;
+    if project.collaboration_mode == CollaborationMode::Airgapped {
+        return Err(ApiError::bad_request(
+            "Airgapped policy blocks external invites",
+        ));
+    }
     let created_by = body
         .get("created_by")
         .and_then(Value::as_str)
         .unwrap_or("user");
-    let permissions = parse_external_permissions(body.get("permissions"))?;
+    let mut permissions = parse_external_permissions(body.get("permissions"))?;
+    if project.collaboration_mode == CollaborationMode::Enterprise {
+        permissions.can_write_blackboard = false;
+        permissions.can_create_artifacts = false;
+        permissions.can_delegate_tasks = false;
+        permissions.max_concurrent_tasks = permissions.max_concurrent_tasks.min(1);
+    }
     let token = state
         .gateway
         .generate_invite(&id, permissions, created_by.to_string())
@@ -2401,6 +2445,28 @@ async fn api_projects_invite(
         "invite": token,
         "project_id": id
     })))
+}
+
+async fn api_projects_invites(
+    Path(id): Path<String>,
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Response<Body>, ApiError> {
+    require_auth(&headers, &state)?;
+    let _ = state.store.get_project(&id).await?;
+    let invites = state.store.list_invite_tokens(&id).await?;
+    Ok(json_ok(json!({"invites": invites})))
+}
+
+async fn api_projects_invite_revoke(
+    Path((id, token)): Path<(String, String)>,
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Response<Body>, ApiError> {
+    require_auth(&headers, &state)?;
+    let _ = state.store.get_project(&id).await?;
+    state.store.revoke_invite_token(&id, &token).await?;
+    Ok(json_ok(json!({"ok": true})))
 }
 
 fn parse_external_permissions(value: Option<&Value>) -> Result<ExternalPermissions, ApiError> {

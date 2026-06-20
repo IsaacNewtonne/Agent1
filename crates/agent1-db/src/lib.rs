@@ -1033,6 +1033,30 @@ impl SqliteStore {
 
     // ─── Collaboration: Tasks ───
 
+    pub async fn list_invite_tokens(&self, project_id: &str) -> Result<Vec<InviteToken>> {
+        let rows = sqlx::query(
+            "SELECT token, project_id, project_name, permissions_json, created_by, gateway_url, expires_at, used_by, created_at FROM invite_tokens WHERE project_id = ?1 ORDER BY created_at DESC",
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|err| Agent1Error::Runtime(format!("failed to list invite tokens: {err}")))?;
+        rows.into_iter().map(invite_from_row).collect()
+    }
+
+    pub async fn revoke_invite_token(&self, project_id: &str, token: &str) -> Result<()> {
+        let result = sqlx::query("DELETE FROM invite_tokens WHERE project_id = ?1 AND token = ?2")
+            .bind(project_id)
+            .bind(token)
+            .execute(&self.pool)
+            .await
+            .map_err(|err| Agent1Error::Runtime(format!("failed to revoke invite token: {err}")))?;
+        if result.rows_affected() == 0 {
+            return Err(Agent1Error::Runtime("invite token not found".to_string()));
+        }
+        Ok(())
+    }
+
     pub async fn save_collab_task(&self, task: &CollabTask) -> Result<()> {
         sqlx::query(
             r#"

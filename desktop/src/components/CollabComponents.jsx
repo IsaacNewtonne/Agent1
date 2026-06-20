@@ -9,6 +9,8 @@ export const ModeSelector = memo(function ModeSelector({ mode, onChange }) {
     { value: "structured", label: "Structured", desc: "Plan → Execute → Review", icon: "📋" },
     { value: "fast", label: "Fast", desc: "Parallel, minimal oversight", icon: "🚀" },
     { value: "careful", label: "Careful", desc: "Approval required", icon: "🛡" },
+    { value: "enterprise", label: "Enterprise", desc: "Audit-heavy, restricted externals", icon: "ENT" },
+    { value: "airgapped", label: "Airgapped", desc: "Local-only, no external access", icon: "AIR" },
   ];
 
   return (
@@ -340,6 +342,46 @@ export const AgentLane = memo(function AgentLane({
 
 // ─── Activity Feed ───
 
+function humanizeEventType(type = "") {
+  return String(type).replace(/([A-Z])/g, " $1").trim() || "Event";
+}
+
+function compactValue(value) {
+  if (value === null || value === undefined || value === "") return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) return `${value.length} item${value.length === 1 ? "" : "s"}`;
+  return Object.entries(value)
+    .slice(0, 3)
+    .map(([key, item]) => `${key}: ${compactValue(item) || "set"}`)
+    .join(", ");
+}
+
+function summarizeEvent(event) {
+  const payload = event?.payload || {};
+  const type = event?.event_type || "";
+  if (typeof payload === "string") return payload;
+  if (!payload || typeof payload !== "object") return "";
+  if (payload.message) return payload.message;
+  if (payload.error) return payload.error;
+  if (payload.tool) return `${payload.tool}${payload.decision ? ` - ${payload.decision}` : ""}`;
+  if (payload.bytes) return `${payload.bytes} bytes`;
+  if (payload.iteration) return `Iteration ${payload.iteration}`;
+  if (type === "SessionStarted") return "Session opened";
+  if (type === "FinalAnswer") return "Final answer produced";
+  return compactValue(payload);
+}
+
+function eventDetails(payload) {
+  if (payload === null || payload === undefined || payload === "") return "No details";
+  if (typeof payload === "string") return payload;
+  try {
+    return JSON.stringify(payload, null, 2);
+  } catch {
+    return String(payload);
+  }
+}
+
 export const ActivityFeed = memo(function ActivityFeed({ events, pendingApprovals, onApprove }) {
   const [expandedIds, setExpandedIds] = useState(new Set());
 
@@ -413,6 +455,8 @@ export const ActivityFeed = memo(function ActivityFeed({ events, pendingApproval
         {events.slice(0, 15).map((event) => {
           const isError = event.event_type?.includes("Error") || event.event_type?.includes("Failed");
           const isExpanded = expandedIds.has(event.id);
+          const title = humanizeEventType(event.event_type);
+          const summary = summarizeEvent(event);
 
           return (
             <div
@@ -431,14 +475,13 @@ export const ActivityFeed = memo(function ActivityFeed({ events, pendingApproval
             >
               <div className="event-header">
                 <span className={`event-type ${isError ? "error" : ""}`}>
-                  {(event.event_type || "").replace(/([A-Z])/g, " $1").trim()}
+                  {title}
                 </span>
                 <span className="event-time">{formatTime(event.created_at)}</span>
               </div>
+              {summary && <div className="event-summary">{summary}</div>}
               <div className="event-payload">
-                {typeof event.payload === "object"
-                  ? JSON.stringify(event.payload)
-                  : String(event.payload || "")}
+                {eventDetails(event.payload)}
               </div>
             </div>
           );

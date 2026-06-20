@@ -17,10 +17,10 @@ const ProjectSphere = memo(function ProjectSphere({ agent, onClick }) {
         <span className="agent1-logo-shell">
           <img src="/icons/agent1-logo.png" alt="" />
         </span>
-        <span className="agent1-model-tooltip" role="tooltip">
-          {modelLabel}
-        </span>
       </button>
+      <span className="agent1-model-tooltip" role="tooltip">
+        {modelLabel}
+      </span>
     </div>
   );
 });

@@ -52,6 +52,58 @@ function formatEventName(type = "") {
   return String(type).replace(/([A-Z])/g, " $1").trim() || "Event";
 }
 
+const POLICY_PROFILES = {
+  automatic: {
+    label: "Automatic",
+    posture: "Balanced",
+    rules: ["Context-based routing", "Default tool policy", "Standard audit trail"],
+  },
+  structured: {
+    label: "Structured",
+    posture: "Planned",
+    rules: ["Plan before execution", "Delegate then review", "Task trace preferred"],
+  },
+  fast: {
+    label: "Fast",
+    posture: "High throughput",
+    rules: ["Parallel execution", "Minimal interruption", "Review after completion"],
+  },
+  careful: {
+    label: "Careful",
+    posture: "Approval-first",
+    rules: ["Ask before risky tools", "Human review expected", "Detailed approval trail"],
+  },
+  enterprise: {
+    label: "Enterprise",
+    posture: "Audit-heavy",
+    rules: ["Approval trail required", "External access reviewed", "Security signals monitored"],
+  },
+  airgapped: {
+    label: "Airgapped",
+    posture: "Local-only",
+    rules: ["Disable external agents", "Avoid network tools", "Prefer local models and MCP"],
+  },
+};
+
+function projectPolicy(project) {
+  return POLICY_PROFILES[project?.collaboration_mode || "automatic"] || POLICY_PROFILES.automatic;
+}
+
+function buildSecuritySignals({ approvals, events, externals, mcpServers }) {
+  const pendingApprovals = approvals.filter((approval) => !approval.decision).length;
+  const deniedApprovals = approvals.filter((approval) => approval.decision === "denied").length;
+  const failedEvents = events.filter((event) => /fail|error|crash/i.test(`${event.event_type} ${JSON.stringify(event.payload || {})}`)).length;
+  const disconnectedExternals = externals.filter((agent) => agent.status && agent.status !== "connected").length;
+  const disabledMcp = mcpServers.filter((server) => !server.enabled).length;
+  return [
+    { label: "Pending approvals", value: pendingApprovals, severity: pendingApprovals ? "warn" : "ok" },
+    { label: "Denied actions", value: deniedApprovals, severity: deniedApprovals ? "warn" : "ok" },
+    { label: "Failed events", value: failedEvents, severity: failedEvents ? "danger" : "ok" },
+    { label: "External drift", value: disconnectedExternals, severity: disconnectedExternals ? "warn" : "ok" },
+    { label: "Disabled MCP", value: disabledMcp, severity: disabledMcp ? "warn" : "ok" },
+  ];
+}
+
 function ProjectInspector({ collab, onClose }) {
   const trace = collab.trace || {};
   const session = trace.session || {};
@@ -60,6 +112,13 @@ function ProjectInspector({ collab, onClose }) {
   const approvals = trace.approvals || [];
   const tasks = collab.collabTasks || [];
   const blackboard = collab.blackboardEntries || [];
+  const policy = projectPolicy(collab.activeProject);
+  const signals = buildSecuritySignals({
+    approvals,
+    events,
+    externals: collab.externals || [],
+    mcpServers: collab.mcpServers || [],
+  });
 
   return (
     <aside className="project-inspector glass-panel" role="dialog" aria-label="Project inspector">
@@ -89,6 +148,31 @@ function ProjectInspector({ collab, onClose }) {
             <span>Blackboard</span><strong>{blackboard.length}</strong>
             <span>Externals</span><strong>{(collab.externals || []).length}</strong>
             <span>MCP</span><strong>{(collab.mcpServers || []).length}</strong>
+          </div>
+        </section>
+      </div>
+
+      <div className="inspector-columns">
+        <section>
+          <div className="collab-section-label">POLICY MODE</div>
+          <div className="policy-card">
+            <strong>{policy.label}</strong>
+            <span>{policy.posture}</span>
+            <div className="policy-rule-list">
+              {policy.rules.map((rule) => <em key={rule}>{rule}</em>)}
+            </div>
+          </div>
+        </section>
+
+        <section>
+          <div className="collab-section-label">SECURITY SIGNALS</div>
+          <div className="security-signal-grid">
+            {signals.map((signal) => (
+              <div key={signal.label} className={`security-signal ${signal.severity}`}>
+                <strong>{signal.value}</strong>
+                <span>{signal.label}</span>
+              </div>
+            ))}
           </div>
         </section>
       </div>
@@ -206,6 +290,8 @@ export default function CollabWorkspace() {
   });
   const [inviteResult, setInviteResult] = useState(null);
   const [mcpActionStatus, setMcpActionStatus] = useState("");
+  const [expandedMcpServerId, setExpandedMcpServerId] = useState(null);
+  const [mcpToolsByServer, setMcpToolsByServer] = useState({});
 
   // Derived
   const connectedExternalCount = useMemo(
@@ -252,6 +338,8 @@ export default function CollabWorkspace() {
     return [{ name: agent1Form.model }, ...options];
   }, [agent1Form.model, selectedAgent1Provider]);
   const agent1ModelProviderError = selectedAgent1Provider?.error || "";
+  const activePolicyMode = collab.activeProject?.collaboration_mode || "automatic";
+  const isAirgapped = activePolicyMode === "airgapped";
 
   // ─── Agent1 config ───
 
@@ -418,18 +506,35 @@ export default function CollabWorkspace() {
 
   const handleSaveExternal = async (e) => {
     e.preventDefault();
+    if (isAirgapped) {
+      setExternalFormStatus("Airgapped policy blocks MCP server changes.");
+      return;
+    }
     if (!externalForm.name.trim() || !externalForm.command.trim()) {
       setExternalFormStatus("Name and command required"); return;
     }
     try {
       const args = externalForm.args ? externalForm.args.split(",").map((s) => s.trim()).filter(Boolean) : [];
+      const name = externalForm.name.trim();
+      const command = externalForm.command.trim();
+      const duplicate = (collab.mcpServers || []).some((server) => (
+        server.name?.toLowerCase() === name.toLowerCase() &&
+        (server.transport || "stdio") === "stdio" &&
+        (server.command || "") === command &&
+        JSON.stringify(server.args || []) === JSON.stringify(args)
+      ));
+      if (duplicate) {
+        setExternalFormStatus("Duplicate MCP server already exists");
+        return;
+      }
       await collab.saveMcpServer({
-        name: externalForm.name.trim(),
+        name,
         transport: "stdio",
-        command: externalForm.command.trim(),
+        command,
         args,
         env: {},
         enabled: externalForm.enabled,
+        project_id: collab.activeProject?.id,
       });
       setExternalFormStatus("Added!");
       setExternalForm({ name: "", command: "", args: "", enabled: true });
@@ -441,6 +546,10 @@ export default function CollabWorkspace() {
   const handleCreateInvite = async () => {
     setExternalFormStatus("");
     setInviteResult(null);
+    if (isAirgapped) {
+      setExternalFormStatus("Airgapped policy blocks external invites.");
+      return;
+    }
     try {
       const permissions = {
         ...invitePermissions,
@@ -457,8 +566,34 @@ export default function CollabWorkspace() {
     }
   };
 
+  const handleCopyInvite = async (invite) => {
+    const token = invite?.token;
+    if (!token) return;
+    try {
+      await navigator.clipboard?.writeText(token);
+      setExternalFormStatus("Invite token copied.");
+    } catch {
+      setExternalFormStatus("Copy failed. Select the token manually.");
+    }
+  };
+
+  const handleRevokeInvite = async (invite) => {
+    if (!invite?.token) return;
+    try {
+      await collab.revokeInvite(invite.token);
+      if (inviteResult?.token === invite.token) setInviteResult(null);
+      setExternalFormStatus("Invite revoked.");
+    } catch (err) {
+      setExternalFormStatus(`Revoke failed: ${err.message}`);
+    }
+  };
+
   const handleMcpToggle = async (server) => {
     setMcpActionStatus("");
+    if (isAirgapped) {
+      setMcpActionStatus("Airgapped policy blocks MCP server changes.");
+      return;
+    }
     try {
       await collab.updateMcpServer(server.id || server.name, { enabled: !server.enabled });
     } catch (err) {
@@ -468,8 +603,19 @@ export default function CollabWorkspace() {
 
   const handleMcpDelete = async (server) => {
     setMcpActionStatus("");
+    if (isAirgapped) {
+      setMcpActionStatus("Airgapped policy blocks MCP server changes.");
+      return;
+    }
+    const serverId = server.id || server.name;
     try {
-      await collab.deleteMcpServer(server.id || server.name);
+      await collab.deleteMcpServer(serverId);
+      setExpandedMcpServerId((current) => (current === serverId ? null : current));
+      setMcpToolsByServer((value) => {
+        const next = { ...value };
+        delete next[serverId];
+        return next;
+      });
     } catch (err) {
       setMcpActionStatus(`MCP delete failed: ${err.message}`);
     }
@@ -482,6 +628,33 @@ export default function CollabWorkspace() {
       setMcpActionStatus(`${server.name}: ${result.healthy ? "healthy" : "unhealthy"}`);
     } catch (err) {
       setMcpActionStatus(`MCP health failed: ${err.message}`);
+    }
+  };
+
+  const handleMcpTools = async (server) => {
+    const serverId = server.id || server.name;
+    setExpandedMcpServerId((current) => (current === serverId ? null : serverId));
+    if (mcpToolsByServer[serverId]?.status === "loaded") return;
+    setMcpToolsByServer((value) => ({
+      ...value,
+      [serverId]: { status: "loading", tools: [], error: "" },
+    }));
+    try {
+      const result = await collab.listMcpTools(serverId);
+      const tools = Array.isArray(result?.tools)
+        ? result.tools
+        : Array.isArray(result)
+          ? result
+          : [];
+      setMcpToolsByServer((value) => ({
+        ...value,
+        [serverId]: { status: "loaded", tools, error: "" },
+      }));
+    } catch (err) {
+      setMcpToolsByServer((value) => ({
+        ...value,
+        [serverId]: { status: "error", tools: [], error: err.message },
+      }));
     }
   };
 
@@ -753,6 +926,9 @@ export default function CollabWorkspace() {
             </div>
             <div className="external-builder-section">
               <div className="collab-section-label">INVITE PERMISSIONS</div>
+              {isAirgapped && (
+                <div className="policy-block-note">Airgapped mode keeps external invites disabled for this project.</div>
+              )}
               <div className="permission-grid">
                 {[
                   ["can_read_blackboard", "Read blackboard"],
@@ -790,7 +966,7 @@ export default function CollabWorkspace() {
                 </label>
               </div>
               <div className="popover-actions inline">
-                <button type="button" className="btn-confirm" onClick={handleCreateInvite} disabled={!collab.activeProject}>
+                <button type="button" className="btn-confirm" onClick={handleCreateInvite} disabled={!collab.activeProject || isAirgapped}>
                   Generate Invite
                 </button>
               </div>
@@ -800,9 +976,31 @@ export default function CollabWorkspace() {
                   <code>{inviteResult.token}</code>
                 </div>
               )}
+              <div className="invite-manager">
+                {(collab.inviteTokens || []).length > 0 ? (
+                  (collab.inviteTokens || []).map((invite) => (
+                    <article key={invite.token} className="invite-manager-row">
+                      <div>
+                        <strong>{invite.used_by ? "Used invite" : "Open invite"}</strong>
+                        <code>{invite.token}</code>
+                        <span>{invite.created_by || "user"} - {invite.used_by || "unused"}</span>
+                      </div>
+                      <div className="invite-manager-actions">
+                        <button type="button" className="btn-ghost" onClick={() => handleCopyInvite(invite)}>Copy</button>
+                        <button type="button" className="btn-danger" onClick={() => handleRevokeInvite(invite)}>Revoke</button>
+                      </div>
+                    </article>
+                  ))
+                ) : (
+                  <div className="invite-manager-empty">No active invites for this project.</div>
+                )}
+              </div>
             </div>
             <div className="external-builder-section">
               <div className="collab-section-label">MCP SERVER</div>
+              {isAirgapped && (
+                <div className="policy-block-note">Airgapped mode blocks MCP server changes from this workspace.</div>
+              )}
             <div className="popover-grid">
               <label>
                 <span>Name</span>
@@ -836,27 +1034,58 @@ export default function CollabWorkspace() {
             </div>
             {externalFormStatus && <div className="popover-status">{externalFormStatus}</div>}
             <div className="popover-actions">
-              <button type="submit" className="btn-confirm">Add Server</button>
+              <button type="submit" className="btn-confirm" disabled={isAirgapped}>Add Server</button>
             </div>
             {(collab.mcpServers || []).length > 0 && (
               <div className="external-builder-section">
                 <div className="collab-section-label">MCP MANAGER</div>
                 <div className="mcp-manager-list">
-                  {(collab.mcpServers || []).map((server) => (
-                    <div key={server.id || server.name} className="mcp-manager-row">
-                      <div>
-                        <strong>{server.name}</strong>
-                        <span>{server.enabled ? "enabled" : "disabled"} - {server.command || "stdio"}</span>
+                  {(collab.mcpServers || []).map((server) => {
+                    const serverId = server.id || server.name;
+                    const toolState = mcpToolsByServer[serverId] || { status: "idle", tools: [], error: "" };
+                    const isExpanded = expandedMcpServerId === serverId;
+                    return (
+                      <div key={serverId} className="mcp-manager-item">
+                        <div className="mcp-manager-row">
+                          <div>
+                            <strong>{server.name}</strong>
+                            <span>{server.enabled ? "enabled" : "disabled"} - {server.command || "stdio"}</span>
+                          </div>
+                          <div className="mcp-manager-actions">
+                            <button type="button" className="btn-ghost" onClick={() => handleMcpHealth(server)}>Health</button>
+                            <button type="button" className="btn-ghost" onClick={() => handleMcpTools(server)}>
+                              {isExpanded ? "Hide Tools" : "Tools"}
+                            </button>
+                            <button type="button" className="btn-ghost" onClick={() => handleMcpToggle(server)}>
+                              {server.enabled ? "Disable" : "Enable"}
+                            </button>
+                            <button type="button" className="btn-danger" onClick={() => handleMcpDelete(server)}>Delete</button>
+                          </div>
+                        </div>
+                        {isExpanded && (
+                          <div className="mcp-tools-drawer">
+                            {toolState.status === "loading" && <div className="mcp-tools-empty">Loading tools...</div>}
+                            {toolState.status === "error" && (
+                              <div className="mcp-tools-empty error">{toolState.error || "Could not load tools."}</div>
+                            )}
+                            {toolState.status === "loaded" && toolState.tools.length === 0 && (
+                              <div className="mcp-tools-empty">No tools reported by this server.</div>
+                            )}
+                            {toolState.status === "loaded" && toolState.tools.length > 0 && (
+                              <div className="mcp-tools-list">
+                                {toolState.tools.map((tool, index) => (
+                                  <article key={tool.name || index} className="mcp-tool-card">
+                                    <strong>{tool.name || `tool_${index + 1}`}</strong>
+                                    <p>{tool.description || "No description provided."}</p>
+                                  </article>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </div>
-                      <div className="mcp-manager-actions">
-                        <button type="button" className="btn-ghost" onClick={() => handleMcpHealth(server)}>Health</button>
-                        <button type="button" className="btn-ghost" onClick={() => handleMcpToggle(server)}>
-                          {server.enabled ? "Disable" : "Enable"}
-                        </button>
-                        <button type="button" className="btn-danger" onClick={() => handleMcpDelete(server)}>Delete</button>
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
                 {mcpActionStatus && <div className="popover-status">{mcpActionStatus}</div>}
               </div>

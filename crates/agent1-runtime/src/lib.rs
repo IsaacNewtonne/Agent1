@@ -6,9 +6,10 @@ use std::{
 };
 
 use agent1_core::{
-    new_id, now, Agent, Agent1Error, ApprovalRecord, ChatMessage, ChatRequest, EventType,
-    McpServerConfig, MemoryItem, Message, MessageRole, PermissionMode, Result, RuntimeEvent,
-    Session, SessionStatus, ToolCallRecord, ToolCallStatus, ToolDefinition, ToolResult,
+    new_id, now, Agent, Agent1Error, ApprovalRecord, ChatMessage, ChatRequest, CollaborationMode,
+    EventType, McpServerConfig, MemoryItem, Message, MessageRole, PermissionMode, Result,
+    RuntimeEvent, Session, SessionStatus, ToolCallRecord, ToolCallStatus, ToolDefinition,
+    ToolResult,
 };
 use agent1_db::SqliteStore;
 use agent1_models::provider_for;
@@ -97,6 +98,9 @@ impl<A: ApprovalDelegate + Clone> AgentRuntime<A> {
             self.session_semaphore.acquire().await.map_err(|_| {
                 Agent1Error::Runtime("concurrent session limit reached".to_string())
             })?;
+        let mut agent = request.agent.clone();
+        self.apply_project_policy(&mut agent, request.project_id.as_deref())
+            .await?;
         self.store.save_agent(&request.agent).await?;
         let session_id = request.session_id.unwrap_or_else(|| new_id("sess"));
         let created_at = now();
@@ -104,39 +108,34 @@ impl<A: ApprovalDelegate + Clone> AgentRuntime<A> {
             id: session_id.clone(),
             title: request.title.clone(),
             project_id: request.project_id.clone(),
-            root_agent_id: request.agent.id.clone(),
+            root_agent_id: agent.id.clone(),
             status: SessionStatus::Running,
             created_at,
             updated_at: created_at,
         };
         self.store.create_session(&session).await?;
-        self.emit(
-            &session_id,
-            &request.agent.id,
-            EventType::SessionStarted,
-            json!({}),
-        )
-        .await?;
+        self.emit(&session_id, &agent.id, EventType::SessionStarted, json!({}))
+            .await?;
         self.save_message(
             &session_id,
             None,
-            Some(request.agent.id.clone()),
+            Some(agent.id.clone()),
             MessageRole::User,
             request.input.clone(),
             json!({}),
         )
         .await?;
 
-        let provider = provider_for(&request.agent.model)?;
-        let memory_context = if request.agent.memory.enabled {
+        let provider = provider_for(&agent.model)?;
+        let memory_context = if agent.memory.enabled {
             let memories = self
                 .store
-                .search_memories(Some(&request.agent.id), &request.input, 8)
+                .search_memories(Some(&agent.id), &request.input, 8)
                 .await?;
             if !memories.is_empty() {
                 self.emit(
                     &session_id,
-                    &request.agent.id,
+                    &agent.id,
                     EventType::MemoryRead,
                     json!({"count": memories.len()}),
                 )
@@ -151,8 +150,8 @@ impl<A: ApprovalDelegate + Clone> AgentRuntime<A> {
             ChatMessage {
                 role: "system".to_string(),
                 content: build_system_prompt(
-                    &request.agent,
-                    self.definitions_for_agent(&request.agent),
+                    &agent,
+                    self.definitions_for_agent(&agent),
                     memory_context.as_deref(),
                 ),
             },
@@ -162,11 +161,11 @@ impl<A: ApprovalDelegate + Clone> AgentRuntime<A> {
             },
         ];
 
-        for iteration in 1..=request.agent.max_iterations {
+        for iteration in 1..=agent.max_iterations {
             if self.store.get_session(&session_id).await?.status == SessionStatus::Cancelled {
                 self.emit(
                     &session_id,
-                    &request.agent.id,
+                    &agent.id,
                     EventType::RunCancelled,
                     json!({"iteration": iteration}),
                 )
@@ -175,14 +174,14 @@ impl<A: ApprovalDelegate + Clone> AgentRuntime<A> {
             }
             self.emit(
                 &session_id,
-                &request.agent.id,
+                &agent.id,
                 EventType::ModelCallStarted,
                 json!({"iteration": iteration}),
             )
             .await?;
             let response = match provider
                 .chat_stream(ChatRequest {
-                    model: request.agent.model.clone(),
+                    model: agent.model.clone(),
                     messages: conversation.clone(),
                 })
                 .await
@@ -195,7 +194,7 @@ impl<A: ApprovalDelegate + Clone> AgentRuntime<A> {
                         .await?;
                     self.emit(
                         &session_id,
-                        &request.agent.id,
+                        &agent.id,
                         EventType::Error,
                         json!({"iteration": iteration, "message": message}),
                     )
@@ -207,7 +206,7 @@ impl<A: ApprovalDelegate + Clone> AgentRuntime<A> {
                 for (index, chunk) in response.chunks.iter().enumerate() {
                     self.emit(
                         &session_id,
-                        &request.agent.id,
+                        &agent.id,
                         EventType::ModelOutputDelta,
                         json!({"iteration": iteration, "chunk_index": index + 1, "content": chunk}),
                     )
@@ -216,14 +215,14 @@ impl<A: ApprovalDelegate + Clone> AgentRuntime<A> {
             }
             self.emit(
                 &session_id,
-                &request.agent.id,
+                &agent.id,
                 EventType::ModelCallCompleted,
                 json!({"iteration": iteration, "bytes": response.content.len()}),
             )
             .await?;
             self.save_message(
                 &session_id,
-                Some(request.agent.id.clone()),
+                Some(agent.id.clone()),
                 None,
                 MessageRole::Assistant,
                 response.content.clone(),
@@ -235,7 +234,7 @@ impl<A: ApprovalDelegate + Clone> AgentRuntime<A> {
                 ModelAction::Final(answer) => {
                     self.emit(
                         &session_id,
-                        &request.agent.id,
+                        &agent.id,
                         EventType::FinalAnswer,
                         json!({"bytes": answer.len()}),
                     )
@@ -251,7 +250,7 @@ impl<A: ApprovalDelegate + Clone> AgentRuntime<A> {
                 ModelAction::ToolCall(call) => {
                     let observation = self
                         .execute_tool_request(
-                            &request.agent,
+                            &agent,
                             &session_id,
                             &request.workspace_root,
                             call.name,
@@ -266,7 +265,7 @@ impl<A: ApprovalDelegate + Clone> AgentRuntime<A> {
                     self.save_message(
                         &session_id,
                         None,
-                        Some(request.agent.id.clone()),
+                        Some(agent.id.clone()),
                         MessageRole::Tool,
                         tool_message.clone(),
                         json!({}),
@@ -289,16 +288,62 @@ impl<A: ApprovalDelegate + Clone> AgentRuntime<A> {
             .await?;
         let message = format!(
             "agent reached max_iterations ({}) before producing a final answer",
-            request.agent.max_iterations
+            agent.max_iterations
         );
         self.emit(
             &session_id,
-            &request.agent.id,
+            &agent.id,
             EventType::Error,
             json!({"message": message}),
         )
         .await?;
         Err(Agent1Error::Runtime(message))
+    }
+
+    async fn apply_project_policy(
+        &self,
+        agent: &mut Agent,
+        project_id: Option<&str>,
+    ) -> Result<()> {
+        let Some(project_id) = project_id else {
+            return Ok(());
+        };
+        let project = self.store.get_project(project_id).await?;
+        match project.collaboration_mode {
+            CollaborationMode::Airgapped => {
+                agent
+                    .permissions
+                    .insert("mcp_call".to_string(), PermissionMode::Deny);
+                agent
+                    .permissions
+                    .insert("agent_call".to_string(), PermissionMode::Ask);
+                agent
+                    .permissions
+                    .insert("network_request".to_string(), PermissionMode::Deny);
+                agent
+                    .permissions
+                    .insert("file_write".to_string(), PermissionMode::Deny);
+                agent
+                    .permissions
+                    .insert("shell".to_string(), PermissionMode::Deny);
+            }
+            CollaborationMode::Enterprise => {
+                for tool in [
+                    "mcp_call",
+                    "agent_call",
+                    "task_board",
+                    "memory_write",
+                    "file_write",
+                    "shell",
+                ] {
+                    agent
+                        .permissions
+                        .insert(tool.to_string(), PermissionMode::Ask);
+                }
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     async fn execute_tool_request(

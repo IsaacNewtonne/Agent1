@@ -840,6 +840,8 @@ pub enum CollaborationMode {
     Structured,
     Fast,
     Careful,
+    Enterprise,
+    Airgapped,
 }
 
 impl Default for CollaborationMode {
@@ -855,6 +857,8 @@ impl CollaborationMode {
             Self::Structured => "Structured",
             Self::Fast => "Fast",
             Self::Careful => "Careful",
+            Self::Enterprise => "Enterprise",
+            Self::Airgapped => "Airgapped",
         }
     }
 
@@ -864,6 +868,8 @@ impl CollaborationMode {
             Self::Structured => "Explicit plan → delegate → review cycle",
             Self::Fast => "Minimal oversight, parallel execution",
             Self::Careful => "Every action needs approval",
+            Self::Enterprise => "Audit-heavy execution with external access controls",
+            Self::Airgapped => "Local-only execution with external systems disabled",
         }
     }
 }
