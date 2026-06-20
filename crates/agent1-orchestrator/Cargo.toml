@@ -7,11 +7,12 @@ license = "MIT OR Apache-2.0"
 repository = "https://example.local/agent1"
 
 [dependencies]
-agent1-core = { path = "../agent1-core" }
-agent1-runtime = { path = "../agent1-runtime" }
-agent1-db = { path = "../agent1-db" }
-agent1-models = { path = "../agent1-models" }
-agent1-tools = { path = "../agent1-tools" }
+agent1-core.workspace = true
+agent1-runtime.workspace = true
+agent1-db.workspace = true
+agent1-models.workspace = true
+agent1-tools.workspace = true
+agent1-memory.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 chrono.workspace = true

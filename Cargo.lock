@@ -84,6 +84,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "agent1-memory"
+version = "0.1.0"
+dependencies = [
+ "agent1-core",
+ "agent1-db",
+ "agent1-models",
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "futures-util",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "agent1-models"
 version = "0.1.0"
 dependencies = [
@@ -103,6 +124,7 @@ version = "0.1.0"
 dependencies = [
  "agent1-core",
  "agent1-db",
+ "agent1-memory",
  "agent1-models",
  "agent1-runtime",
  "agent1-tools",

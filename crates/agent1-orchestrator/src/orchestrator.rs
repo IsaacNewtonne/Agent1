@@ -12,9 +12,12 @@ use agent1_core::{
     Result, RuntimeEvent, StepId, StepStatus,
 };
 use agent1_db::SqliteStore;
+use agent1_memory::{
+    create_memory_entry, MemoryProvider, MemorySearchQuery, MemoryType, SemanticMemoryStore,
+};
 use futures_util::future::join_all;
 use serde_json::json;
-use std::{collections::HashSet, path::PathBuf, sync::Arc};
+use std::{collections::HashSet, path::Path, path::PathBuf, sync::Arc};
 
 #[derive(Debug, Clone)]
 struct StepExecutionResult {
@@ -23,10 +26,19 @@ struct StepExecutionResult {
     error: Option<String>,
     escalated: bool,
     escalated_description: Option<String>,
+    critique_result: Option<CritiqueResult>,
+}
+
+#[derive(Debug, Clone)]
+enum CritiqueResult {
+    Approved,
+    NeedsRevision { reason: String },
+    Failed { reason: String },
 }
 
 pub struct Orchestrator {
     store: SqliteStore,
+    memory: Option<SemanticMemoryStore>,
     decomposer: GoalDecomposer,
     team_manager: TeamManager,
     progress: ProgressTracker,
@@ -38,12 +50,26 @@ impl Orchestrator {
     pub fn new(store: SqliteStore, config: OrchestratorConfig) -> Self {
         Self {
             store: store.clone(),
+            memory: None,
             decomposer: GoalDecomposer::new(config.clone()),
             team_manager: TeamManager::new(store.clone(), config.clone()),
             progress: ProgressTracker::new(store.clone()),
             escalation: EscalationManager::new(store, config.clone()),
             config,
         }
+    }
+
+    pub async fn with_memory(mut self, memory_path: impl AsRef<Path>) -> Self {
+        match SemanticMemoryStore::connect(memory_path).await {
+            Ok(store) => {
+                self.memory = Some(store);
+                tracing::info!("Memory store connected successfully");
+            }
+            Err(e) => {
+                tracing::warn!("Failed to connect memory store: {}", e);
+            }
+        }
+        self
     }
 
     pub async fn orchestrate(&self, request: OrchestrateRequest) -> Result<OrchestrateResponse> {
@@ -64,16 +90,26 @@ impl Orchestrator {
         )
         .await?;
 
+        // Recall relevant memories before planning
+        let relevant_context = self.recall_relevant_context(&request.objective).await;
+        if !relevant_context.is_empty() {
+            tracing::info!("Recalled {} relevant memories for context", relevant_context.len());
+        }
+
         session.status = OrchestrationStatus::Planning;
         self.progress.save_orchestration(&session).await?;
 
         let plan_view = self
             .decomposer
-            .decompose(&request.objective, &session.id)
+            .decompose_with_context(&request.objective, &session.id, &relevant_context)
             .await?;
         self.progress
             .save_plan(&plan_view.plan, &plan_view.steps)
             .await?;
+
+        for (sub_plan_id, sub_steps) in &plan_view.sub_steps {
+            self.progress.save_sub_steps(sub_plan_id, sub_steps.to_vec()).await?;
+        }
 
         session.plan_id = Some(plan_view.plan.id.clone());
         session.status = OrchestrationStatus::Executing;
@@ -113,6 +149,14 @@ impl Orchestrator {
         }
         self.progress.save_orchestration(&session).await?;
 
+        // Store outcome in memory
+        self.store_outcome(&request.objective, &completed_plan, &completed_steps)
+            .await;
+
+        // Generate suggestions based on the execution
+        self.generate_suggestions(&completed_plan, &completed_steps)
+            .await;
+
         Ok(OrchestrateResponse {
             orchestration_id: session.id,
             plan_id: plan_view.plan.id,
@@ -122,6 +166,152 @@ impl Orchestrator {
             } else {
                 "Orchestration completed with some steps failing".to_string()
             },
+        })
+    }
+
+    async fn recall_relevant_context(&self, objective: &str) -> Vec<String> {
+        let Some(ref memory) = self.memory else {
+            return Vec::new();
+        };
+
+        match memory
+            .search(MemorySearchQuery {
+                query: objective.to_string(),
+                memory_type: None,
+                limit: 5,
+                min_relevance: 0.6,
+            })
+            .await
+        {
+            Ok(results) => results.into_iter().map(|r| r.entry.content).collect(),
+            Err(e) => {
+                tracing::warn!("Failed to recall memories: {}", e);
+                Vec::new()
+            }
+        }
+    }
+
+    async fn store_outcome(
+        &self,
+        objective: &str,
+        plan: &agent1_core::ExecutionPlan,
+        steps: &[ExecutionStep],
+    ) {
+        let Some(ref memory) = self.memory else {
+            return;
+        };
+
+        let successful_steps: Vec<_> = steps
+            .iter()
+            .filter(|s| s.status == StepStatus::Completed)
+            .map(|s| s.description.clone())
+            .collect();
+
+        if successful_steps.is_empty() {
+            return;
+        }
+
+        let outcome = format!(
+            "Objective: {}\nCompleted steps: {}",
+            objective,
+            successful_steps.join("; ")
+        );
+
+        let embedding = match self.get_embedding(&outcome).await {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::warn!("Failed to embed outcome: {}", e);
+                return;
+            }
+        };
+
+        let entry = create_memory_entry(
+            outcome,
+            embedding,
+            MemoryType::Task,
+            if plan.status == agent1_core::PlanStatus::Completed {
+                0.7
+            } else {
+                0.4
+            },
+        );
+
+        if let Err(e) = memory.store(entry).await {
+            tracing::warn!("Failed to store outcome in memory: {}", e);
+        }
+    }
+
+    async fn generate_suggestions(&self, plan: &agent1_core::ExecutionPlan, steps: &[ExecutionStep]) {
+        let Some(ref memory) = self.memory else {
+            return;
+        };
+
+        let failed_steps: Vec<_> = steps
+            .iter()
+            .filter(|s| s.status == StepStatus::Failed)
+            .collect();
+
+        for step in failed_steps {
+            if step.output.is_none() {
+                continue;
+            }
+
+            let suggestion = agent1_core::Suggestion::new(
+                agent1_core::SuggestionType::FollowUp,
+                format!("Retry or alternative approach for: {}", step.description),
+                format!("Failed step in plan {} - original error: {}", plan.id, step.output.as_ref().unwrap_or(&String::new())),
+                None,
+            );
+
+            if let Err(e) = memory.store_suggestion(&suggestion).await {
+                tracing::warn!("Failed to store suggestion: {}", e);
+            } else {
+                tracing::debug!("Generated follow-up suggestion for failed step: {}", step.id);
+            }
+        }
+
+        if plan.status != agent1_core::PlanStatus::Completed && !steps.is_empty() {
+            let pending_count = steps.iter().filter(|s| s.status == StepStatus::Pending || s.status == StepStatus::Blocked).count();
+            if pending_count > 0 {
+                let suggestion = agent1_core::Suggestion::new(
+                    agent1_core::SuggestionType::FollowUp,
+                    format!("Continue incomplete objective: {} ({} steps remaining)", plan.objective, pending_count),
+                    format!("Plan {} was not completed - {} of {} steps remain", plan.id, pending_count, steps.len()),
+                    None,
+                );
+
+                if let Err(e) = memory.store_suggestion(&suggestion).await {
+                    tracing::warn!("Failed to store suggestion: {}", e);
+                } else {
+                    tracing::debug!("Generated follow-up suggestion for incomplete plan: {}", plan.id);
+                }
+            }
+        }
+    }
+
+    async fn get_suggestions(&self, status: Option<agent1_core::SuggestionStatus>) -> Result<Vec<agent1_core::Suggestion>> {
+        let Some(ref memory) = self.memory else {
+            return Ok(Vec::new());
+        };
+        memory.get_suggestions(status, 20).await.map_err(|e| {
+            agent1_core::Agent1Error::Runtime(format!("Failed to get suggestions: {}", e))
+        })
+    }
+
+    async fn update_suggestion_status(&self, id: &str, status: agent1_core::SuggestionStatus) -> Result<()> {
+        let Some(ref memory) = self.memory else {
+            return Ok(());
+        };
+        memory.update_suggestion_status(id, status).await.map_err(|e| {
+            agent1_core::Agent1Error::Runtime(format!("Failed to update suggestion: {}", e))
+        })
+    }
+
+    async fn get_embedding(&self, text: &str) -> Result<Vec<f32>> {
+        let config = &self.config.model_routing.planner;
+        let provider = agent1_models::provider_for(config)?;
+        provider.embeddings(text, config).await.map_err(|e| {
+            agent1_core::Agent1Error::Runtime(format!("Failed to get embedding: {}", e))
         })
     }
 
@@ -229,6 +419,7 @@ impl Orchestrator {
                             error: None,
                             escalated: true,
                             escalated_description: Some(escalation.1),
+                            critique_result: None,
                         };
                     }
 
@@ -260,6 +451,7 @@ impl Orchestrator {
                                 error: None,
                                 escalated: false,
                                 escalated_description: None,
+                                critique_result: None,
                             }
                         }
                         Err(err) => {
@@ -270,6 +462,7 @@ impl Orchestrator {
                                 error: Some(err.to_string()),
                                 escalated: false,
                                 escalated_description: None,
+                                critique_result: None,
                             }
                         }
                     }
@@ -317,8 +510,17 @@ impl Orchestrator {
                             completed_ids.insert(exec_result.step_id);
                         } else {
                             step.status = StepStatus::Completed;
-                            step.output = exec_result.output;
+                            step.output = exec_result.output.clone();
                             step.completed_at = Some(now());
+
+                            let critique = self.critique_step(step).await;
+
+                            let critique_result_json = match &critique {
+                                CritiqueResult::Approved => json!({"critique": "approved"}),
+                                CritiqueResult::NeedsRevision { reason } => json!({"critique": "needs_revision", "reason": reason}),
+                                CritiqueResult::Failed { reason } => json!({"critique": "failed", "reason": reason}),
+                            };
+
                             if let Err(e) = self.progress.save_step(step).await {
                                 tracing::error!("failed to save completed step: {}", e);
                             }
@@ -327,9 +529,37 @@ impl Orchestrator {
                                     &session.id,
                                     None,
                                     EventType::StepCompleted,
-                                    json!({"step_id": step.id, "status": "completed"}),
+                                    json!({"step_id": step.id, "status": "completed", "critique": critique_result_json}),
                                 )
                                 .await;
+
+                            match critique {
+                                CritiqueResult::NeedsRevision { reason } => {
+                                    tracing::info!("Step {} needs revision: {}", step.id, reason);
+                                }
+                                CritiqueResult::Failed { reason } => {
+                                    tracing::warn!("Step {} failed critique: {}", step.id, reason);
+                                    step.output = Some(format!("{} [CRITIQUE FAILED: {}]", step.output.clone().unwrap_or_default(), reason));
+                                    step.status = StepStatus::Failed;
+                                    let _ = self.progress.save_step(step).await;
+                                }
+                                CritiqueResult::Approved => {}
+                            }
+
+                            if let Some(sub_plan_id) = &step.sub_plan_id {
+                                match self.execute_sub_plan(step, session, workspace_root, auto_approve).await {
+                                    Ok(sub_output) => {
+                                        tracing::info!("Sub-plan {} completed for step {}", sub_plan_id, step.id);
+                                        step.output = Some(format!("{}\n\n[SUB-PLAN {} COMPLETED]\n{}", 
+                                            step.output.clone().unwrap_or_default(), sub_plan_id, sub_output));
+                                        let _ = self.progress.save_step(step).await;
+                                    }
+                                    Err(e) => {
+                                        tracing::error!("Sub-plan {} failed for step {}: {}", sub_plan_id, step.id, e);
+                                    }
+                                }
+                            }
+
                             completed_ids.insert(exec_result.step_id);
                         }
                     }
@@ -343,6 +573,152 @@ impl Orchestrator {
         }
 
         Ok(())
+    }
+
+    async fn critique_step(&self, step: &ExecutionStep) -> CritiqueResult {
+        let output = match &step.output {
+            Some(o) => o,
+            None => return CritiqueResult::Failed { reason: "No output produced".to_string() },
+        };
+
+        let critique_prompt = format!(
+            r#"You are a critic agent reviewing the output of an executed step.
+
+Step Description: {}
+
+Step Output:
+{}
+
+Evaluate the output and respond with ONLY a JSON object:
+{{
+  "approved": true/false,
+  "reason": "brief explanation of your evaluation",
+  "needs_revision": false (include only if approved is false)
+}}
+
+Rules:
+1. If the output directly addresses the step description and is actionable, approve it
+2. If the output is incomplete, unclear, or doesn't fully address the step, mark as needs_revision
+3. If the output is completely wrong, contradictory, or nonsensical, mark as failed
+4. Keep reason concise (1-2 sentences)
+5. Return ONLY valid JSON, no markdown or explanation."#,
+            step.description, output
+        );
+
+        let config = &self.config.model_routing.critic;
+        let provider = match agent1_models::provider_for(config) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!("Failed to get critic provider: {}", e);
+                return CritiqueResult::Approved;
+            }
+        };
+
+        let request = agent1_core::ChatRequest {
+            model: config.clone(),
+            messages: vec![agent1_core::ChatMessage {
+                role: "user".to_string(),
+                content: critique_prompt,
+            }],
+        };
+
+        let response = match provider.chat(request).await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!("Critic call failed: {}", e);
+                return CritiqueResult::Approved;
+            }
+        };
+
+        match self.parse_critique(&response.content) {
+            Ok(result) => result,
+            Err(e) => {
+                tracing::warn!("Failed to parse critique: {}", e);
+                CritiqueResult::Approved
+            }
+        }
+    }
+
+    fn parse_critique(&self, content: &str) -> Result<CritiqueResult> {
+        let trimmed = content.trim();
+        let cleaned = if trimmed.starts_with("```json") {
+            trimmed
+                .trim_start_matches("```json")
+                .trim_end_matches("```")
+                .trim()
+        } else {
+            trimmed
+        };
+
+        let json: serde_json::Value = serde_json::from_str(cleaned)
+            .map_err(|e| agent1_core::Agent1Error::InvalidModelResponse(format!("invalid JSON: {}", e)))?;
+
+        let approved = json.get("approved")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+
+        let reason = json.get("reason")
+            .and_then(|v| v.as_str())
+            .unwrap_or("No reason provided")
+            .to_string();
+
+        if approved {
+            Ok(CritiqueResult::Approved)
+        } else if json.get("needs_revision").and_then(|v| v.as_bool()).unwrap_or(false) {
+            Ok(CritiqueResult::NeedsRevision { reason })
+        } else {
+            Ok(CritiqueResult::Failed { reason })
+        }
+    }
+
+    async fn execute_sub_plan(
+        &self,
+        step: &ExecutionStep,
+        session: &OrchestrationSession,
+        workspace: &Path,
+        auto_approve: bool,
+    ) -> Result<String> {
+        let Some(ref sub_plan_id) = step.sub_plan_id else {
+            return Ok(step.output.clone().unwrap_or_default());
+        };
+
+        tracing::info!("Executing sub-plan {} for step {}", sub_plan_id, step.id);
+
+        let mut sub_outputs = Vec::new();
+
+        if let Some(sub_steps_data) = self.progress.get_sub_steps(sub_plan_id).await? {
+            for sub_step in sub_steps_data {
+                let role = sub_step.assigned_role.unwrap_or(agent1_core::AgentRole::Worker);
+
+                let agent = self
+                    .team_manager
+                    .create_agent_for_role(role, &session.id)
+                    .await?;
+
+                let mut step_with_agent = sub_step.clone();
+                step_with_agent.assigned_agent_id = Some(agent.id.clone());
+                self.progress.save_step(&step_with_agent).await?;
+
+                match self
+                    .team_manager
+                    .run_step(&step_with_agent, workspace.to_path_buf(), auto_approve)
+                    .await
+                {
+                    Ok(output) => {
+                        sub_outputs.push(format!("[{}] {}", sub_step.description, output));
+                        tracing::debug!("Sub-step {} completed", sub_step.id);
+                    }
+                    Err(e) => {
+                        sub_outputs.push(format!("[{}] FAILED: {}", sub_step.description, e));
+                        tracing::warn!("Sub-step {} failed: {}", sub_step.id, e);
+                    }
+                }
+            }
+        } else {
+            tracing::warn!("No sub-steps found for sub-plan {}", sub_plan_id);
+        }
+
+        Ok(sub_outputs.join("\n"))
     }
 
     async fn emit(
@@ -391,6 +767,7 @@ impl Clone for Orchestrator {
     fn clone(&self) -> Self {
         Self {
             store: self.store.clone(),
+            memory: None,
             decomposer: GoalDecomposer::new(self.config.clone()),
             team_manager: TeamManager::new(self.store.clone(), self.config.clone()),
             progress: ProgressTracker::new(self.store.clone()),

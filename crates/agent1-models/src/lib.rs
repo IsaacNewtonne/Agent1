@@ -21,6 +21,10 @@ pub trait ModelProvider: Send + Sync {
         })
     }
     async fn list_models(&self, config: &ModelConfig) -> Result<Vec<ModelInfo>>;
+    async fn embeddings(&self, prompt: &str, config: &ModelConfig) -> Result<Vec<f32>> {
+        let _ = (prompt, config);
+        Err(Agent1Error::Config("embeddings not supported for this provider".to_string()))
+    }
 }
 
 pub fn provider_for(config: &ModelConfig) -> Result<Box<dyn ModelProvider>> {
@@ -411,6 +415,37 @@ impl ModelProvider for OllamaProvider {
         let content = chunks.join("");
         Ok(ChatStreamResponse { content, chunks })
     }
+
+    async fn embeddings(&self, prompt: &str, config: &ModelConfig) -> Result<Vec<f32>> {
+        let base_url = config
+            .base_url
+            .clone()
+            .unwrap_or_else(|| "http://localhost:11434".to_string());
+        let model = &config.model;
+        let response = self
+            .client
+            .post(format!("{base_url}/api/embeddings"))
+            .json(&json!({
+                "model": model,
+                "prompt": prompt
+            }))
+            .send()
+            .await
+            .map_err(|err| map_request_error("ollama embeddings request", err))?
+            .error_for_status()
+            .map_err(|err| {
+                Agent1Error::Runtime(format!("ollama embeddings returned an error: {err}"))
+            })?;
+        let body: OllamaEmbeddingsResponse = response.json().await.map_err(|err| {
+            Agent1Error::InvalidModelResponse(format!("ollama embeddings response was not JSON: {err}"))
+        })?;
+        Ok(body.embedding)
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct OllamaEmbeddingsResponse {
+    embedding: Vec<f32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -646,6 +681,49 @@ impl ModelProvider for OpenAiCompatibleProvider {
             })
             .collect())
     }
+
+    async fn embeddings(&self, prompt: &str, config: &ModelConfig) -> Result<Vec<f32>> {
+        let base_url = config
+            .base_url
+            .clone()
+            .unwrap_or_else(|| "http://localhost:8000/v1".to_string());
+        let response = self
+            .client
+            .post(format!("{base_url}/embeddings"))
+            .json(&OpenAiEmbeddingsRequest {
+                model: &config.model,
+                input: prompt,
+            })
+            .send()
+            .await
+            .map_err(|err| map_request_error("OpenAI-compatible embeddings request", err))?
+            .error_for_status()
+            .map_err(|err| {
+                Agent1Error::Runtime(format!("OpenAI-compatible embeddings returned an error: {err}"))
+            })?;
+        let body: OpenAiEmbeddingsResponse = response.json().await.map_err(|err| {
+            Agent1Error::InvalidModelResponse(format!(
+                "OpenAI-compatible embeddings response was not JSON: {err}"
+            ))
+        })?;
+        Ok(body.data.into_iter().next().map(|e| e.embedding).unwrap_or_default())
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAiEmbeddingsRequest<'a> {
+    model: &'a str,
+    input: &'a str,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiEmbeddingsResponse {
+    data: Vec<OpenAiEmbeddingData>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiEmbeddingData {
+    embedding: Vec<f32>,
 }
 
 #[async_trait]

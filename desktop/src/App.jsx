@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { CanvasGraph } from "./components";
+import { CanvasGraph, MemoryPanel } from "./components";
 
 const SETTINGS_KEY = "agent1_desktop_settings_v1";
 const AGENT1_ID = "agent1";
@@ -969,7 +969,7 @@ export default function App() {
                   Close
                 </button>
               </div>
-              {whatsappStatus.state === "sidecar_offline" && (
+{whatsappStatus.state === "sidecar_offline" && (
                 <div style={{ fontSize: "10px", color: "var(--accent-warning)", marginTop: "4px" }}>
                   Sidecar offline. Restart Agent1 so startup can install dependencies and launch it automatically.
                 </div>
@@ -977,6 +977,11 @@ export default function App() {
             </div>
           )}
         </div>
+
+        <MemoryPanel
+          apiBase={settings.apiBase}
+          currentAgentId={selectedAgentId}
+        />
       </aside>
 
       {/* ===== CENTER CANVAS ===== */}

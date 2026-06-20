@@ -19,8 +19,11 @@ use agent1_db::SqliteStore;
 use std::path::Path;
 
 pub async fn create_orchestrator(db_path: impl AsRef<Path>) -> Result<Orchestrator> {
+    let db_path = db_path.as_ref();
     let store = SqliteStore::connect(db_path).await?;
-    Ok(Orchestrator::new(store, OrchestratorConfig::default()))
+    let memory_path = db_path.with_extension("memory.db");
+    let orchestrator = Orchestrator::new(store, OrchestratorConfig::default());
+    Ok(orchestrator.with_memory(&memory_path).await)
 }
 
 pub async fn run_orchestration(
@@ -29,8 +32,12 @@ pub async fn run_orchestration(
     workspace_root: Option<String>,
     auto_approve: bool,
 ) -> Result<OrchestrateResponse> {
+    let db_path = db_path.as_ref();
     let store = SqliteStore::connect(db_path).await?;
+
+    let memory_path = db_path.with_extension("memory.db");
     let orchestrator = Orchestrator::new(store, OrchestratorConfig::default());
+    let orchestrator = orchestrator.with_memory(&memory_path).await;
 
     orchestrator
         .orchestrate(OrchestrateRequest {
@@ -39,12 +46,4 @@ pub async fn run_orchestration(
             auto_approve,
         })
         .await
-}
-
-mod agent1_core {
-    pub use agent1_core::*;
-}
-
-mod agent1_db {
-    pub use agent1_db::*;
 }

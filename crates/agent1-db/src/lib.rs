@@ -4,7 +4,8 @@ use agent1_core::{
     now, redact_secrets_text, redact_secrets_value, Agent, Agent1Error, AgentCard, ApprovalRecord,
     BlackboardEntry, CollabEvent, CollabTask, CollaborationMode, EventType, ExternalAgent,
     ExternalAgentStatus, InviteToken, McpServerConfig, MemoryItem, Message, MessageRole, Project,
-    Result, RuntimeEvent, Session, SessionStatus, ToolCallRecord, ToolCallStatus,
+    Result, RuntimeEvent, Session, SessionStatus, Suggestion, SuggestionStatus, ToolCallRecord,
+    ToolCallStatus,
 };
 use chrono::{DateTime, Utc};
 use sqlx::{sqlite::SqliteConnectOptions, Executor, Row, SqlitePool};
@@ -12,6 +13,7 @@ use sqlx::{sqlite::SqliteConnectOptions, Executor, Row, SqlitePool};
 const INITIAL_SCHEMA: &str = include_str!("../migrations/0001_initial.sql");
 const ORCHESTRATOR_SCHEMA: &str = include_str!("../migrations/0002_orchestrator.sql");
 const COLLABORATION_SCHEMA: &str = include_str!("../migrations/0003_collaboration.sql");
+const SUGGESTIONS_SCHEMA: &str = include_str!("../migrations/0004_suggestions.sql");
 
 #[derive(Clone)]
 pub struct SqliteStore {
@@ -57,6 +59,12 @@ impl SqliteStore {
             .await
             .map_err(|err| {
                 Agent1Error::Runtime(format!("failed to run collaboration migration: {err}"))
+            })?;
+        self.pool
+            .execute(SUGGESTIONS_SCHEMA)
+            .await
+            .map_err(|err| {
+                Agent1Error::Runtime(format!("failed to run suggestions migration: {err}"))
             })?;
         self.ensure_compat_columns().await?;
         Ok(())
@@ -597,6 +605,138 @@ impl SqliteStore {
             .execute(&self.pool)
             .await
             .map_err(|err| Agent1Error::Runtime(format!("failed to delete memory: {err}")))?;
+        Ok(())
+    }
+
+    pub async fn write_suggestion(&self, suggestion: &Suggestion) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT OR REPLACE INTO suggestions
+            (id, suggestion_type, content, trigger_context, related_memory_id, status, created_at, updated_at, accepted_at, dismissed_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            "#,
+        )
+        .bind(&suggestion.id)
+        .bind(suggestion.suggestion_type.to_string())
+        .bind(&suggestion.content)
+        .bind(&suggestion.trigger_context)
+        .bind(&suggestion.related_memory_id)
+        .bind(suggestion.status.to_string())
+        .bind(suggestion.created_at)
+        .bind(suggestion.updated_at)
+        .bind(suggestion.accepted_at)
+        .bind(suggestion.dismissed_at)
+        .execute(&self.pool)
+        .await
+        .map_err(|err| Agent1Error::Runtime(format!("failed to write suggestion: {err}")))?;
+        Ok(())
+    }
+
+    pub async fn get_suggestions(
+        &self,
+        status: Option<SuggestionStatus>,
+        limit: i64,
+    ) -> Result<Vec<Suggestion>> {
+        let rows: Vec<(
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+        )> = match &status {
+            Some(s) => {
+                sqlx::query_as(
+                    r#"
+                    SELECT id, suggestion_type, content, trigger_context, related_memory_id, status, created_at, updated_at, accepted_at, dismissed_at
+                    FROM suggestions
+                    WHERE status = ?
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    "#,
+                )
+                .bind(s.to_string())
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|err| Agent1Error::Runtime(format!("failed to get suggestions: {err}")))?
+            }
+            None => {
+                sqlx::query_as(
+                    r#"
+                    SELECT id, suggestion_type, content, trigger_context, related_memory_id, status, created_at, updated_at, accepted_at, dismissed_at
+                    FROM suggestions
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    "#,
+                )
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|err| Agent1Error::Runtime(format!("failed to get suggestions: {err}")))?
+            }
+        };
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(id, suggestion_type, content, trigger_context, related_memory_id, status, created_at, updated_at, accepted_at, dismissed_at)| {
+                    Suggestion {
+                        id,
+                        suggestion_type: parse_enum(&suggestion_type),
+                        content,
+                        trigger_context,
+                        related_memory_id,
+                        status: parse_enum(&status),
+                        created_at: parse_date(&created_at),
+                        updated_at: parse_date(&updated_at),
+                        accepted_at: accepted_at.and_then(|s| parse_date_opt(&s)),
+                        dismissed_at: dismissed_at.and_then(|s| parse_date_opt(&s)),
+                    }
+                },
+            )
+            .collect())
+    }
+
+    pub async fn update_suggestion_status(
+        &self,
+        suggestion_id: &str,
+        new_status: SuggestionStatus,
+    ) -> Result<()> {
+        let now = Utc::now();
+        let (accepted_at, dismissed_at) = match new_status {
+            SuggestionStatus::Accepted => (Some(now), None),
+            SuggestionStatus::Dismissed => (None, Some(now)),
+            _ => (None, None),
+        };
+
+        sqlx::query(
+            r#"
+            UPDATE suggestions
+            SET status = ?, updated_at = ?, accepted_at = ?, dismissed_at = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(new_status.to_string())
+        .bind(now)
+        .bind(accepted_at)
+        .bind(dismissed_at)
+        .bind(suggestion_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|err| Agent1Error::Runtime(format!("failed to update suggestion status: {err}")))?;
+        Ok(())
+    }
+
+    pub async fn delete_suggestion(&self, suggestion_id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM suggestions WHERE id = ?1")
+            .bind(suggestion_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|err| Agent1Error::Runtime(format!("failed to delete suggestion: {err}")))?;
         Ok(())
     }
 
@@ -1371,6 +1511,50 @@ fn collab_event_from_row(row: sqlx::sqlite::SqliteRow) -> Result<CollabEvent> {
         payload: serde_json::from_str(&payload_json).unwrap_or_default(),
         created_at: row.get::<DateTime<Utc>, _>("created_at"),
     })
+}
+
+fn parse_enum<T: std::str::FromStr + ToString>(s: &str) -> T
+where
+    <T as std::str::FromStr>::Err: std::fmt::Debug,
+{
+    s.parse::<T>().unwrap_or_else(|_| {
+        s.to_lowercase()
+            .split('_')
+            .map(|part| {
+                let mut chars = part.chars();
+                match chars.next() {
+                    None => String::new(),
+                    Some(first) => first.to_uppercase().to_string() + chars.as_str(),
+                }
+            })
+            .collect::<String>()
+            .parse()
+            .unwrap_or_else(|_| {
+                s.to_lowercase()
+                    .split('_')
+                    .fold(String::new(), |mut acc, part| {
+                        if !acc.is_empty() {
+                            acc.push_str("_");
+                        }
+                        acc.push_str(&part.to_uppercase());
+                        acc
+                    })
+                    .parse()
+                    .expect("failed to parse enum")
+            })
+    })
+}
+
+fn parse_date(s: &str) -> DateTime<Utc> {
+    DateTime::parse_from_rfc3339(s)
+        .map(|dt| dt.with_timezone(&Utc))
+        .unwrap_or_else(|_| Utc::now())
+}
+
+fn parse_date_opt(s: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|dt| dt.with_timezone(&Utc))
 }
 
 #[cfg(test)]

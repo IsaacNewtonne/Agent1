@@ -1,10 +1,10 @@
 use crate::types::{ExecutionPlan, ExecutionStep, OrchestratorConfig, PlanView};
 use agent1_core::{
-    now, Agent1Error, AgentRole, ChatMessage, ChatRequest, PlanId, PlanStatus, Result,
+    new_id, now, Agent1Error, AgentRole, ChatMessage, ChatRequest, PlanId, PlanStatus, Result,
 };
 use agent1_models::provider_for;
 use serde::{Deserialize, Deserializer};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Deserialize)]
 struct PlanStep {
@@ -12,6 +12,8 @@ struct PlanStep {
     #[serde(default, deserialize_with = "deserialize_dependency_indices")]
     dependencies: Vec<String>,
     assigned_role: String,
+    #[serde(default)]
+    sub_steps: Vec<PlanStep>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -62,7 +64,7 @@ impl GoalDecomposer {
             Err(_) => self.fallback_plan(goal),
         };
 
-        let steps = self.build_steps(&plan.id, generated.steps)?;
+        let (steps, sub_steps) = self.build_steps(&plan.id, generated.steps)?;
 
         let plan_with_status = ExecutionPlan {
             id: plan.id,
@@ -77,14 +79,73 @@ impl GoalDecomposer {
         Ok(PlanView {
             plan: plan_with_status,
             steps,
+            sub_steps,
+        })
+    }
+
+    pub async fn decompose_with_context(
+        &self,
+        goal: &str,
+        orchestration_id: &str,
+        context: &[String],
+    ) -> Result<PlanView> {
+        let plan = ExecutionPlan::new(
+            orchestration_id.to_string(),
+            format!("Plan for: {}", goal),
+            goal.to_string(),
+        );
+
+        let prompt = self.build_contextual_decomposition_prompt(goal, context);
+        let generated = match self.call_planner(&prompt).await {
+            Ok(plan_json) => self
+                .parse_plan_response(&plan_json)
+                .unwrap_or_else(|_| self.fallback_plan(goal)),
+            Err(_) => self.fallback_plan(goal),
+        };
+
+        let (steps, sub_steps) = self.build_steps(&plan.id, generated.steps)?;
+
+        let plan_with_status = ExecutionPlan {
+            id: plan.id,
+            orchestration_id: plan.orchestration_id,
+            objective: plan.objective,
+            raw_goal: plan.raw_goal,
+            status: PlanStatus::Planned,
+            created_at: now(),
+            completed_at: None,
+        };
+
+        Ok(PlanView {
+            plan: plan_with_status,
+            steps,
+            sub_steps,
         })
     }
 
     fn build_decomposition_prompt(&self, goal: &str) -> String {
+        self.build_decomposition_prompt_with_context(goal, &[])
+    }
+
+    fn build_contextual_decomposition_prompt(&self, goal: &str, context: &[String]) -> String {
+        self.build_decomposition_prompt_with_context(goal, context)
+    }
+
+    fn build_decomposition_prompt_with_context(&self, goal: &str, context: &[String]) -> String {
+        let context_section = if context.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "\n\nRelevant Context from Past Sessions:\n{}\n\nUse this context to inform your planning when relevant.",
+                context.iter().enumerate().map(|(i, c)| format!("{}. {}", i + 1, c)).collect::<Vec<_>>().join("\n")
+            )
+        };
+
         format!(
             r#"You are a Planner agent helping break down a complex objective into execution steps.
 
 Objective: {}
+
+{}
 
 Generate a detailed execution plan as JSON with this exact format:
 {{
@@ -93,7 +154,14 @@ Generate a detailed execution plan as JSON with this exact format:
     {{
       "description": "Clear description of what this step does",
       "dependencies": ["list of step indices this depends on, e.g. [0] for first step"],
-      "assigned_role": "planner|worker|critic|researcher|builder|reporter"
+      "assigned_role": "planner|worker|critic|researcher|builder|reporter",
+      "sub_steps": [
+        {{
+          "description": "Sub-step description",
+          "dependencies": ["indices relative to parent step's sub-steps"],
+          "assigned_role": "worker|builder|researcher"
+        }}
+      ]
     }}
   ]
 }}
@@ -110,9 +178,13 @@ Rules:
 9. Use "reporter" only for final summary/reporting
 10. Include an explicit validation or verification step for code, configuration, or workflow changes
 11. Keep descriptions concise but actionable
+12. When context mentions specific tools, patterns, or approaches, consider using them
+13. For complex steps (e.g., "build a web server", "create database schema"), add 2-5 sub_steps
+14. Sub-steps are for breaking down complex tasks into smaller, verifiable parts
+15. Sub-steps run as part of their parent step and share the parent's context
 
 Return ONLY valid JSON, no markdown or explanation."#,
-            goal
+            goal, context_section
         )
     }
 
@@ -138,6 +210,7 @@ Return ONLY valid JSON, no markdown or explanation."#,
                 description: goal.to_string(),
                 dependencies: Vec::new(),
                 assigned_role: "worker".to_string(),
+                sub_steps: Vec::new(),
             }],
         }
     }
@@ -170,9 +243,10 @@ Return ONLY valid JSON, no markdown or explanation."#,
         &self,
         plan_id: &PlanId,
         generated_steps: Vec<PlanStep>,
-    ) -> Result<Vec<ExecutionStep>> {
+    ) -> Result<(Vec<ExecutionStep>, HashMap<PlanId, Vec<ExecutionStep>>)> {
         let mut steps = Vec::new();
         let mut pending_dependencies = Vec::new();
+        let mut sub_steps_map: HashMap<PlanId, Vec<ExecutionStep>> = HashMap::new();
 
         for (index, step) in generated_steps.into_iter().enumerate() {
             let role = match step.assigned_role.as_str() {
@@ -192,6 +266,20 @@ Return ONLY valid JSON, no markdown or explanation."#,
             let mut execution_step =
                 ExecutionStep::new(plan_id.clone(), step.description, index, Vec::new());
             execution_step.assigned_role = Some(role);
+
+            if !step.sub_steps.is_empty() {
+                let sub_plan_id = new_id("plan");
+                let sub_steps = self.build_sub_steps(&sub_plan_id, step.sub_steps, 0)?;
+                let sub_steps_count = sub_steps.len();
+                execution_step.sub_plan_id = Some(sub_plan_id.clone());
+                sub_steps_map.insert(sub_plan_id.clone(), sub_steps);
+                tracing::debug!(
+                    "Created sub-plan {} with {} steps for step {}",
+                    sub_plan_id,
+                    sub_steps_count,
+                    execution_step.id
+                );
+            }
 
             steps.push(execution_step);
             pending_dependencies.push(step.dependencies);
@@ -228,6 +316,63 @@ Return ONLY valid JSON, no markdown or explanation."#,
                 steps.len(),
                 self.config.max_plan_depth
             )));
+        }
+
+        Ok((steps, sub_steps_map))
+    }
+
+    fn build_sub_steps(
+        &self,
+        plan_id: &PlanId,
+        generated_steps: Vec<PlanStep>,
+        base_order: usize,
+    ) -> Result<Vec<ExecutionStep>> {
+        let mut steps = Vec::new();
+        let mut pending_dependencies = Vec::new();
+
+        for (index, step) in generated_steps.into_iter().enumerate() {
+            let order = base_order * 100 + index;
+            let role = match step.assigned_role.as_str() {
+                "worker" => AgentRole::Worker,
+                "builder" => AgentRole::Builder,
+                "researcher" => AgentRole::Researcher,
+                "critic" => AgentRole::Critic,
+                "planner" => AgentRole::Planner,
+                "reporter" => AgentRole::Reporter,
+                other => {
+                    tracing::warn!("Unknown role in sub-steps: {}, defaulting to worker", other);
+                    AgentRole::Worker
+                }
+            };
+
+            let mut execution_step =
+                ExecutionStep::new(plan_id.clone(), step.description, order, Vec::new());
+            execution_step.assigned_role = Some(role);
+
+            if !step.sub_steps.is_empty() {
+                tracing::warn!("Nested sub-steps not supported, ignoring");
+            }
+
+            steps.push(execution_step);
+            pending_dependencies.push(step.dependencies);
+        }
+
+        let step_ids = steps.iter().map(|step| step.id.clone()).collect::<Vec<_>>();
+        for (index, dependencies) in pending_dependencies.into_iter().enumerate() {
+            let resolved: Vec<_> = dependencies
+                .into_iter()
+                .filter_map(|dependency| {
+                    let dependency_index = match dependency.parse::<usize>() {
+                        Ok(i) => i,
+                        Err(_) => return None,
+                    };
+                    if dependency_index >= index {
+                        return None;
+                    }
+                    step_ids.get(dependency_index).cloned()
+                })
+                .collect();
+            steps[index].dependencies = resolved;
         }
 
         Ok(steps)

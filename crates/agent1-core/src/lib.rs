@@ -17,6 +17,7 @@ pub type PlanId = String;
 pub type StepId = String;
 pub type OrchestrationId = String;
 pub type EscalationId = String;
+pub type SuggestionId = String;
 
 pub fn new_id(prefix: &str) -> String {
     format!("{prefix}_{}", Uuid::now_v7().simple())
@@ -329,6 +330,109 @@ pub struct MemoryItem {
     pub updated_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum SuggestionType {
+    FollowUp,
+    Improvement,
+    Routine,
+    Contextual,
+}
+
+impl std::fmt::Display for SuggestionType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SuggestionType::FollowUp => write!(f, "follow_up"),
+            SuggestionType::Improvement => write!(f, "improvement"),
+            SuggestionType::Routine => write!(f, "routine"),
+            SuggestionType::Contextual => write!(f, "contextual"),
+        }
+    }
+}
+
+impl std::str::FromStr for SuggestionType {
+    type Err = String;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "follow_up" => Ok(SuggestionType::FollowUp),
+            "improvement" => Ok(SuggestionType::Improvement),
+            "routine" => Ok(SuggestionType::Routine),
+            "contextual" => Ok(SuggestionType::Contextual),
+            other => Err(format!("unknown suggestion type: {}", other)),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum SuggestionStatus {
+    Pending,
+    Accepted,
+    Dismissed,
+    Expired,
+}
+
+impl std::fmt::Display for SuggestionStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SuggestionStatus::Pending => write!(f, "pending"),
+            SuggestionStatus::Accepted => write!(f, "accepted"),
+            SuggestionStatus::Dismissed => write!(f, "dismissed"),
+            SuggestionStatus::Expired => write!(f, "expired"),
+        }
+    }
+}
+
+impl std::str::FromStr for SuggestionStatus {
+    type Err = String;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "pending" => Ok(SuggestionStatus::Pending),
+            "accepted" => Ok(SuggestionStatus::Accepted),
+            "dismissed" => Ok(SuggestionStatus::Dismissed),
+            "expired" => Ok(SuggestionStatus::Expired),
+            other => Err(format!("unknown suggestion status: {}", other)),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Suggestion {
+    pub id: SuggestionId,
+    pub suggestion_type: SuggestionType,
+    pub content: String,
+    pub trigger_context: String,
+    pub related_memory_id: Option<MemoryId>,
+    pub status: SuggestionStatus,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub accepted_at: Option<DateTime<Utc>>,
+    pub dismissed_at: Option<DateTime<Utc>>,
+}
+
+impl Suggestion {
+    pub fn new(
+        suggestion_type: SuggestionType,
+        content: String,
+        trigger_context: String,
+        related_memory_id: Option<MemoryId>,
+    ) -> Self {
+        let now = now();
+        Self {
+            id: new_id("sug"),
+            suggestion_type,
+            content,
+            trigger_context,
+            related_memory_id,
+            status: SuggestionStatus::Pending,
+            created_at: now,
+            updated_at: now,
+            accepted_at: None,
+            dismissed_at: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpServerConfig {
     pub id: String,
@@ -548,6 +652,7 @@ impl ExecutionStep {
             created_at: now(),
             started_at: None,
             completed_at: None,
+            sub_plan_id: None,
         }
     }
 
@@ -710,6 +815,8 @@ pub struct ExecutionStep {
     pub created_at: DateTime<Utc>,
     pub started_at: Option<DateTime<Utc>>,
     pub completed_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sub_plan_id: Option<PlanId>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

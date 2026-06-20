@@ -42,7 +42,7 @@ use tokio::{
     task::AbortHandle,
     time::{sleep, timeout, Duration},
 };
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::CorsLayer;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Parser)]
@@ -1040,7 +1040,10 @@ fn apply_common_headers(response: &mut Response<Body>) {
 
 fn cors_layer() -> CorsLayer {
     CorsLayer::new()
-        .allow_origin(Any)
+        .allow_origin([
+            "http://127.0.0.1:1420".parse().unwrap(),
+            "http://localhost:1420".parse().unwrap(),
+        ])
         .allow_methods([
             Method::GET,
             Method::POST,
@@ -1126,6 +1129,8 @@ async fn run_server(bind: String, db: PathBuf, api_token: Option<String>) -> any
         .route("/api/mcp/servers/{id}/health", get(api_mcp_servers_health))
         .route("/api/memory", get(api_memory_search).post(api_memory_write))
         .route("/api/memory/{id}", delete(api_memory_delete))
+        .route("/api/suggestions", get(api_suggestions_list))
+        .route("/api/suggestions/{id}/{action}", post(api_suggestions_update))
         .route("/api/sessions/run", post(api_sessions_run))
         .route(
             "/api/sessions/{session_id}/run",
@@ -1704,6 +1709,39 @@ async fn api_memory_delete(
     require_auth(&headers, &state)?;
     state.store.delete_memory(&id).await?;
     Ok(json_ok(json!({"ok": true})))
+}
+
+async fn api_suggestions_list(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Result<Response<Body>, ApiError> {
+    require_auth(&headers, &state)?;
+    let status = params.get("status").and_then(|v| match v.as_str() {
+        "pending" => Some(agent1_core::SuggestionStatus::Pending),
+        "accepted" => Some(agent1_core::SuggestionStatus::Accepted),
+        "dismissed" => Some(agent1_core::SuggestionStatus::Dismissed),
+        "expired" => Some(agent1_core::SuggestionStatus::Expired),
+        _ => None,
+    });
+    let suggestions = state.store.get_suggestions(status, 20).await?;
+    Ok(json_ok(json!({"suggestions": suggestions, "count": suggestions.len()})))
+}
+
+async fn api_suggestions_update(
+    Path((id, action)): Path<(String, String)>,
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Response<Body>, ApiError> {
+    require_auth(&headers, &state)?;
+    let new_status = match action.as_str() {
+        "accept" => agent1_core::SuggestionStatus::Accepted,
+        "dismiss" => agent1_core::SuggestionStatus::Dismissed,
+        "expire" => agent1_core::SuggestionStatus::Expired,
+        _ => return Err(ApiError::bad_request("invalid action, use accept/dismiss/expire")),
+    };
+    state.store.update_suggestion_status(&id, new_status.clone()).await?;
+    Ok(json_ok(json!({"ok": true, "id": id, "status": new_status.to_string()})))
 }
 
 async fn api_well_known_agent(

@@ -1,17 +1,35 @@
 use agent1_core::{
-    now, Agent1Error, ExecutionStep, OrchestrationSession, OrchestrationStatus, PlanStatus, Result,
-    StepStatus,
+    now, Agent1Error, ExecutionStep, OrchestrationSession, OrchestrationStatus, PlanStatus,
+    Result, StepStatus,
 };
 use agent1_db::SqliteStore;
 use sqlx::Row;
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 pub struct ProgressTracker {
     store: SqliteStore,
+    sub_plans: Arc<RwLock<HashMap<String, Vec<ExecutionStep>>>>,
 }
 
 impl ProgressTracker {
     pub fn new(store: SqliteStore) -> Self {
-        Self { store }
+        Self {
+            store,
+            sub_plans: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    pub async fn save_sub_steps(&self, plan_id: &str, steps: Vec<ExecutionStep>) -> Result<()> {
+        let mut cache = self.sub_plans.write().await;
+        cache.insert(plan_id.to_string(), steps);
+        Ok(())
+    }
+
+    pub async fn get_sub_steps(&self, plan_id: &str) -> Result<Option<Vec<ExecutionStep>>> {
+        let cache = self.sub_plans.read().await;
+        Ok(cache.get(plan_id).cloned())
     }
 
     pub async fn save_orchestration(&self, session: &OrchestrationSession) -> Result<()> {
@@ -281,6 +299,7 @@ fn step_from_row(row: sqlx::sqlite::SqliteRow) -> Result<ExecutionStep> {
         created_at: row.get("created_at"),
         started_at: row.get("started_at"),
         completed_at: row.get("completed_at"),
+        sub_plan_id: None,
     })
 }
 

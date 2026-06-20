@@ -6,8 +6,8 @@ description = "Agent1 WhatsApp integration via sidecar"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-agent1-core = { path = "../agent1-core" }
-agent1-db = { path = "../agent1-db" }
+agent1-core.workspace = true
+agent1-db.workspace = true
 axum = { workspace = true }
 anyhow.workspace = true
 serde.workspace = true

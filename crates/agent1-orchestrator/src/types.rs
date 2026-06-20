@@ -4,6 +4,7 @@ pub use agent1_core::{
     OrchestrationSession, OrchestrationStatus, PlanId, PlanStatus, Result, StepId, StepStatus,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct OrchestratorConfig {
@@ -136,6 +137,8 @@ pub struct StepUpdate {
 pub struct PlanView {
     pub plan: ExecutionPlan,
     pub steps: Vec<ExecutionStep>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub sub_steps: HashMap<PlanId, Vec<ExecutionStep>>,
 }
 
 pub fn check_escalation_triggers(content: &str) -> Option<(EscalationType, String)> {
