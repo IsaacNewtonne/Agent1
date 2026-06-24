@@ -25,11 +25,20 @@ const AGENT1_PERMISSIONS = {
   file_write: "deny", shell: "deny",
 };
 const MODEL_PROVIDER_LABELS = {
+  codex: "Codex",
+  nvidia: "NVIDIA NIM",
   ollama: "Ollama",
   opencode: "OpenCode",
   openai_compatible: "OpenAI-compatible",
-  nvidia: "NVIDIA NIM",
 };
+const AGENT1_PROVIDER_ORDER = ["codex", "nvidia", "opencode", "ollama"];
+const API_PROVIDER_OPTIONS = [
+  { provider: "codex", label: "Codex", defaultBaseUrl: "https://api.openai.com/v1", requiresKey: true },
+  { provider: "nvidia", label: "NVIDIA NIM", defaultBaseUrl: "https://integrate.api.nvidia.com/v1", requiresKey: true },
+  { provider: "opencode", label: "OpenCode Zen Models", defaultBaseUrl: "", requiresKey: false },
+  { provider: "ollama", label: "Local Ollama 4GB Models", defaultBaseUrl: "http://localhost:11434", requiresKey: false },
+  { provider: "openai_compatible", label: "OpenAI-compatible", defaultBaseUrl: "http://localhost:8000/v1", requiresKey: false },
+];
 
 function loadSettings() {
   try {
@@ -38,14 +47,85 @@ function loadSettings() {
       apiBase: saved.apiBase || "http://127.0.0.1:17371",
       refreshMs: Number(saved.refreshMs) >= 500 ? Number(saved.refreshMs) : 2000,
       autoRefresh: saved.autoRefresh !== false,
+      modelApis: Array.isArray(saved.modelApis) ? saved.modelApis : [],
     };
   } catch {
-    return { apiBase: "http://127.0.0.1:17371", refreshMs: 2000, autoRefresh: true };
+    return { apiBase: "http://127.0.0.1:17371", refreshMs: 2000, autoRefresh: true, modelApis: [] };
   }
+}
+
+function saveSettings(settings) {
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
 }
 
 function modelName(model) {
   return typeof model === "string" ? model : model?.name || "";
+}
+
+function providerRank(provider) {
+  const index = AGENT1_PROVIDER_ORDER.indexOf(provider);
+  return index === -1 ? AGENT1_PROVIDER_ORDER.length : index;
+}
+
+function apiOption(provider) {
+  return API_PROVIDER_OPTIONS.find((option) => option.provider === provider) || API_PROVIDER_OPTIONS[0];
+}
+
+function newApiDraft(provider = "codex") {
+  const option = apiOption(provider);
+  return {
+    id: `api_${Date.now()}`,
+    name: option.label,
+    provider,
+    model: "",
+    base_url: option.defaultBaseUrl,
+    api_key: "",
+    enabled: true,
+  };
+}
+
+function normalizeApiEntry(entry) {
+  return {
+    id: entry.id || `api_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+    name: String(entry.name || apiOption(entry.provider).label).trim(),
+    provider: entry.provider || "codex",
+    model: String(entry.model || "").trim(),
+    base_url: String(entry.base_url || "").trim(),
+    api_key: String(entry.api_key || "").trim(),
+    enabled: entry.enabled !== false,
+  };
+}
+
+function sortedModelApis(entries) {
+  return (entries || [])
+    .map(normalizeApiEntry)
+    .filter((entry) => entry.enabled && entry.name && entry.provider && entry.model)
+    .sort((left, right) => providerRank(left.provider) - providerRank(right.provider));
+}
+
+function modelConfigFromApi(entry) {
+  return {
+    provider: entry.provider,
+    model: entry.model,
+    base_url: entry.base_url || undefined,
+    api_key: entry.api_key || undefined,
+    display_name: entry.name,
+    context_window: 8192,
+    temperature: 0.2,
+  };
+}
+
+function agent1ModelFromApis(entries, current = {}) {
+  const sorted = sortedModelApis(entries);
+  if (!sorted.length) return null;
+  const preferred =
+    sorted.find((entry) => entry.provider === current.provider && entry.model === current.model) ||
+    sorted[0];
+  const rest = sorted.filter((entry) => entry.id !== preferred.id);
+  return {
+    ...modelConfigFromApi(preferred),
+    fallbacks: rest.map(modelConfigFromApi),
+  };
 }
 
 function formatEventName(type = "") {
@@ -436,8 +516,10 @@ function ProjectInspector({ collab, apiBase, onClose }) {
 }
 
 export default function CollabWorkspace() {
-  const settings = loadSettings();
+  const [settings, setSettings] = useState(() => loadSettings());
   const collab = useCollaboration(settings.apiBase);
+  const configuredApis = useMemo(() => sortedModelApis(settings.modelApis), [settings.modelApis]);
+  const needsProviderSetup = configuredApis.length === 0;
 
   // Local UI state
   const [selectedAgentId, setSelectedAgentId] = useState(null);
@@ -449,6 +531,11 @@ export default function CollabWorkspace() {
   const [isRunning, setIsRunning] = useState(false);
   const [deleteCandidate, setDeleteCandidate] = useState(null);
   const [deletingAgentId, setDeletingAgentId] = useState(null);
+  const [providerSetupOpen, setProviderSetupOpen] = useState(needsProviderSetup);
+  const [apiDrafts, setApiDrafts] = useState(() =>
+    (settings.modelApis?.length ? settings.modelApis : [newApiDraft("codex")]).map(normalizeApiEntry)
+  );
+  const [providerSetupStatus, setProviderSetupStatus] = useState("");
 
   // Agent builder state
   const [agentForm, setAgentForm] = useState({
@@ -491,7 +578,7 @@ export default function CollabWorkspace() {
     [collab.externals, collab.mcpServers]
   );
   const providerOptions = useMemo(() => {
-    const fallback = ["opencode", "ollama", "openai_compatible", "nvidia"].map((provider) => ({
+    const fallback = ["codex", "nvidia", "opencode", "ollama", "openai_compatible"].map((provider) => ({
       provider,
       label: MODEL_PROVIDER_LABELS[provider] || provider,
       models: [],
@@ -509,10 +596,33 @@ export default function CollabWorkspace() {
     }
     return [...merged.values()];
   }, [collab.modelProviders]);
+  const configuredProviderOptions = useMemo(() => {
+    if (!configuredApis.length) return providerOptions;
+    const grouped = new Map();
+    for (const option of providerOptions) {
+      grouped.set(option.provider, { ...option, models: [...(option.models || [])] });
+    }
+    for (const api of configuredApis) {
+      const current = grouped.get(api.provider) || {
+        provider: api.provider,
+        label: MODEL_PROVIDER_LABELS[api.provider] || api.provider,
+        models: [],
+      };
+      if (!current.models.some((model) => modelName(model) === api.model)) {
+        current.models = [{ name: api.model }, ...current.models];
+      }
+      grouped.set(api.provider, current);
+    }
+    return [...grouped.values()].sort((left, right) => providerRank(left.provider) - providerRank(right.provider));
+  }, [configuredApis, providerOptions]);
+  const localAgentProviderOptions = useMemo(
+    () => configuredProviderOptions.filter((item) => item.provider !== "codex"),
+    [configuredProviderOptions]
+  );
   const selectedAgent1Provider =
-    providerOptions.find((item) => item.provider === agent1Form.provider) || providerOptions[0];
+    configuredProviderOptions.find((item) => item.provider === agent1Form.provider) || configuredProviderOptions[0];
   const selectedAgentProvider =
-    providerOptions.find((item) => item.provider === agentForm.provider) || providerOptions[0];
+    localAgentProviderOptions.find((item) => item.provider === agentForm.provider) || localAgentProviderOptions[0];
   const agentModelOptions = useMemo(() => {
     const options = selectedAgentProvider?.models || [];
     if (!agentForm.model) return options;
@@ -534,15 +644,26 @@ export default function CollabWorkspace() {
   // ─── Agent1 config ───
 
   useEffect(() => {
+    if (configuredApis.length) {
+      const model = agent1ModelFromApis(configuredApis, collab.agent1Agent?.model || agent1Form);
+      if (model) {
+        setAgent1Form({
+          provider: model.provider,
+          model: model.model,
+        });
+      }
+      return;
+    }
     if (collab.agent1Agent?.model) {
       setAgent1Form({
         provider: collab.agent1Agent.model.provider || "opencode",
         model: collab.agent1Agent.model.model || "",
       });
     }
-  }, [collab.agent1Agent]);
+  }, [collab.agent1Agent, configuredApis]);
 
   useEffect(() => {
+    if (configuredApis.length) return;
     if (collab.agent1Agent?.model) return;
     if (!selectedAgent1Provider?.provider) return;
     const firstModel = modelName(selectedAgent1Provider.models?.[0]);
@@ -553,7 +674,7 @@ export default function CollabWorkspace() {
         model: form.model || firstModel,
       };
     });
-  }, [collab.agent1Agent, selectedAgent1Provider]);
+  }, [collab.agent1Agent, selectedAgent1Provider, configuredApis]);
 
   useEffect(() => {
     if (!selectedAgentProvider?.provider) return;
@@ -591,7 +712,8 @@ export default function CollabWorkspace() {
 
   const handleSaveAgent1 = async (e) => {
     e.preventDefault();
-    if (!agent1Form.provider.trim() || !agent1Form.model.trim()) {
+    const configuredModel = agent1ModelFromApis(configuredApis, agent1Form);
+    if (!configuredModel && (!agent1Form.provider.trim() || !agent1Form.model.trim())) {
       setAgent1FormStatus("Provider and model are required.");
       return;
     }
@@ -604,10 +726,13 @@ export default function CollabWorkspace() {
         role: "Orchestrator",
         system_prompt: AGENT1_SYSTEM_PROMPT,
         tools: AGENT1_TOOLS,
-        model: {
+        model: configuredModel || {
           provider: agent1Form.provider.trim(),
           model: agent1Form.model.trim(),
           base_url: collab.agent1Agent?.model?.base_url || undefined,
+          api_key: collab.agent1Agent?.model?.api_key || undefined,
+          display_name: collab.agent1Agent?.model?.display_name || undefined,
+          fallbacks: collab.agent1Agent?.model?.fallbacks || [],
           context_window: collab.agent1Agent?.model?.context_window || 8192,
           temperature: collab.agent1Agent?.model?.temperature ?? 0.2,
         },
@@ -625,6 +750,66 @@ export default function CollabWorkspace() {
   };
 
   // ─── Run task ───
+
+  const updateApiDraft = (id, patch) => {
+    setApiDrafts((drafts) =>
+      drafts.map((draft) => {
+        if (draft.id !== id) return draft;
+        const next = { ...draft, ...patch };
+        if (patch.provider) {
+          const previousOption = apiOption(draft.provider);
+          const option = apiOption(patch.provider);
+          next.name = draft.name === previousOption.label ? option.label : draft.name;
+          next.base_url = option.defaultBaseUrl;
+          if (patch.provider === "opencode") next.model = draft.model || "zen";
+          if (patch.provider === "ollama") next.model = draft.model || "llama3.1:8b";
+        }
+        return next;
+      })
+    );
+  };
+
+  const handleSaveProviderSetup = async (e) => {
+    e.preventDefault();
+    const entries = apiDrafts.map(normalizeApiEntry).filter((entry) => entry.enabled);
+    const missing = entries.find((entry) => {
+      const option = apiOption(entry.provider);
+      return !entry.name || !entry.model || (option.requiresKey && !entry.api_key);
+    });
+    if (missing) {
+      setProviderSetupStatus("Name, model, and required API key are needed.");
+      return;
+    }
+    if (!entries.length) {
+      setProviderSetupStatus("Add at least one provider API.");
+      return;
+    }
+    const nextSettings = { ...settings, modelApis: entries };
+    setSettings(nextSettings);
+    saveSettings(nextSettings);
+    setProviderSetupStatus("");
+    setProviderSetupOpen(false);
+    const model = agent1ModelFromApis(entries, agent1Form);
+    if (!model) return;
+    setAgent1Form({ provider: model.provider, model: model.model });
+    try {
+      await collab.saveAgent({
+        ...(collab.agent1Agent || {}),
+        id: collab.agent1Agent?.id || AGENT1_ID,
+        name: "Agent1",
+        description: "Central user-facing orchestrator and controller",
+        role: "Orchestrator",
+        system_prompt: AGENT1_SYSTEM_PROMPT,
+        tools: AGENT1_TOOLS,
+        model,
+        memory: { ...(collab.agent1Agent?.memory || {}), enabled: true },
+        permissions: { ...(collab.agent1Agent?.permissions || {}), ...AGENT1_PERMISSIONS },
+        max_iterations: collab.agent1Agent?.max_iterations || 16,
+      });
+    } catch (err) {
+      setAgent1FormStatus(`Error: ${err.message}`);
+    }
+  };
 
   const handleRunTask = useCallback(async (input, workspace) => {
     if (isRunning) return;
@@ -970,6 +1155,113 @@ export default function CollabWorkspace() {
         </div>
       </div>
 
+      {providerSetupOpen && (
+        <div className="collab-modal-backdrop">
+          <form className="provider-setup-dialog glass-panel" role="dialog" onSubmit={handleSaveProviderSetup}>
+            <div className="popover-head">
+              <div>
+                <strong>LLM Provider APIs</strong>
+                <span className="popover-sub">Agent1 failover order: Codex, NVIDIA NIM, OpenCode Zen, Ollama</span>
+              </div>
+              {!needsProviderSetup && (
+                <button type="button" className="btn-ghost" onClick={() => setProviderSetupOpen(false)}>Close</button>
+              )}
+            </div>
+            <div className="provider-api-list">
+              {apiDrafts.map((api, index) => {
+                const option = apiOption(api.provider);
+                return (
+                  <section key={api.id} className="provider-api-row">
+                    <div className="provider-api-row-head">
+                      <span>{index + 1}</span>
+                      <strong>{api.name || option.label}</strong>
+                      <label className="permission-toggle">
+                        <input
+                          type="checkbox"
+                          checked={api.enabled}
+                          onChange={(e) => updateApiDraft(api.id, { enabled: e.target.checked })}
+                        />
+                        <span>Enabled</span>
+                      </label>
+                    </div>
+                    <div className="provider-api-grid">
+                      <label>
+                        <span>Name</span>
+                        <input
+                          type="text"
+                          value={api.name}
+                          onChange={(e) => updateApiDraft(api.id, { name: e.target.value })}
+                          placeholder="Primary Codex"
+                        />
+                      </label>
+                      <label>
+                        <span>Provider</span>
+                        <select
+                          value={api.provider}
+                          onChange={(e) => updateApiDraft(api.id, { provider: e.target.value })}
+                        >
+                          {API_PROVIDER_OPTIONS.map((item) => (
+                            <option key={item.provider} value={item.provider}>{item.label}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        <span>Model</span>
+                        <input
+                          type="text"
+                          value={api.model}
+                          onChange={(e) => updateApiDraft(api.id, { model: e.target.value })}
+                          placeholder={api.provider === "ollama" ? "llama3.1:8b" : "model id"}
+                        />
+                      </label>
+                      <label>
+                        <span>Base URL</span>
+                        <input
+                          type="text"
+                          value={api.base_url}
+                          onChange={(e) => updateApiDraft(api.id, { base_url: e.target.value })}
+                          placeholder={option.defaultBaseUrl}
+                        />
+                      </label>
+                      <label className="provider-api-key">
+                        <span>API Key</span>
+                        <input
+                          type="password"
+                          value={api.api_key}
+                          onChange={(e) => updateApiDraft(api.id, { api_key: e.target.value })}
+                          placeholder={option.requiresKey ? "Required" : "Optional"}
+                        />
+                      </label>
+                    </div>
+                    <div className="provider-api-actions">
+                      <button
+                        type="button"
+                        className="btn-ghost"
+                        onClick={() => setApiDrafts((drafts) => drafts.filter((draft) => draft.id !== api.id))}
+                        disabled={apiDrafts.length === 1}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </section>
+                );
+              })}
+            </div>
+            {providerSetupStatus && <div className="popover-status error">{providerSetupStatus}</div>}
+            <div className="popover-actions">
+              <button
+                type="button"
+                className="btn-ghost"
+                onClick={() => setApiDrafts((drafts) => [...drafts, newApiDraft("codex")])}
+              >
+                Add API
+              </button>
+              <button type="submit" className="btn-confirm">Save APIs</button>
+            </div>
+          </form>
+        </div>
+      )}
+
       {/* Agent1 Config Popover */}
       {agent1ConfigOpen && (
         <div className="collab-popover glass-panel" id="agent1-config" role="dialog">
@@ -988,14 +1280,14 @@ export default function CollabWorkspace() {
                   value={agent1Form.provider}
                   onChange={(e) => {
                     const provider = e.target.value;
-                    const nextProvider = providerOptions.find((item) => item.provider === provider);
+                    const nextProvider = configuredProviderOptions.find((item) => item.provider === provider);
                     setAgent1Form({
                       provider,
                       model: modelName(nextProvider?.models?.[0]),
                     });
                   }}
                 >
-                  {providerOptions.map((provider) => (
+                  {configuredProviderOptions.map((provider) => (
                     <option key={provider.provider} value={provider.provider}>
                       {provider.label}
                     </option>
@@ -1030,6 +1322,10 @@ export default function CollabWorkspace() {
               </div>
             )}
             <div className="popover-actions">
+              <button type="button" className="btn-ghost" onClick={() => {
+                setApiDrafts((settings.modelApis?.length ? settings.modelApis : [newApiDraft("codex")]).map(normalizeApiEntry));
+                setProviderSetupOpen(true);
+              }}>Provider APIs</button>
               <button type="submit" className="btn-confirm">Save Agent1</button>
             </div>
           </form>
@@ -1070,7 +1366,7 @@ export default function CollabWorkspace() {
                   value={agentForm.provider}
                   onChange={(e) => {
                     const provider = e.target.value;
-                    const nextProvider = providerOptions.find((item) => item.provider === provider);
+                    const nextProvider = localAgentProviderOptions.find((item) => item.provider === provider);
                     setAgentForm((f) => ({
                       ...f,
                       provider,
@@ -1078,7 +1374,7 @@ export default function CollabWorkspace() {
                     }));
                   }}
                 >
-                  {providerOptions.map((provider) => (
+                  {localAgentProviderOptions.map((provider) => (
                     <option key={provider.provider} value={provider.provider}>
                       {provider.label}
                     </option>

@@ -9,13 +9,13 @@ use std::{
 
 use agent1_collab::CollaborationEngine;
 use agent1_core::{
-    new_id, now, Agent, Agent1Error, AgentCard, AgentSkill, EventType, McpServerConfig, MemoryItem,
-    ModelConfig, RuntimeEvent, SessionStatus,
+    new_id, now, validate_agent_model_policy, Agent, Agent1Error, AgentCard, AgentSkill, EventType,
+    McpServerConfig, MemoryItem, ModelConfig, RuntimeEvent, SessionStatus,
 };
 use agent1_core::{AuthorType, CollaborationMode, ExternalPermissions};
 use agent1_db::SqliteStore;
 use agent1_gateway::{ExternalGateway, GatewayMessage};
-use agent1_memory::{SemanticMemoryStore, MemoryProvider};
+use agent1_memory::{MemoryProvider, SemanticMemoryStore};
 use agent1_models::provider_for;
 use agent1_orchestrator::{run_orchestration, ProgressTracker};
 use agent1_runtime::{
@@ -365,6 +365,9 @@ async fn main() -> anyhow::Result<()> {
                 provider,
                 model: "unused".to_string(),
                 base_url,
+                api_key: None,
+                display_name: None,
+                fallbacks: Vec::new(),
                 context_window: 8192,
                 temperature: 0.2,
                 top_p: None,
@@ -379,6 +382,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Agent { command } => match command {
             AgentCommand::Create { path, db } => {
                 let agent = load_agent(path)?;
+                validate_agent_model_policy(&agent)?;
                 let store = SqliteStore::connect(db).await?;
                 store.save_agent(&agent).await?;
                 store.save_agent_card(&card_for_agent(&agent)).await?;
@@ -1116,6 +1120,9 @@ async fn run_server(bind: String, db: PathBuf, api_token: Option<String>) -> any
                 .or_else(|_| std::env::var("AGENT1_MODEL_DEFAULT_BASE_URL"))
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
+            api_key: None,
+            display_name: None,
+            fallbacks: Vec::new(),
             context_window: std::env::var("AGENT1_MODEL_CONSOLIDATION_CONTEXT")
                 .or_else(|_| std::env::var("AGENT1_MODEL_DEFAULT_CONTEXT"))
                 .ok()
@@ -1128,18 +1135,19 @@ async fn run_server(bind: String, db: PathBuf, api_token: Option<String>) -> any
         loop {
             sleep(Duration::from_secs(3600)).await;
             match SemanticMemoryStore::connect(&memory_db_path).await {
-                Ok(memory_store) => {
-                    match memory_store.consolidate(&model_config).await {
-                        Ok(count) => {
-                            if count > 0 {
-                                tracing::info!("Memory consolidation completed: {} memories consolidated", count);
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!("Memory consolidation failed: {}", e);
+                Ok(memory_store) => match memory_store.consolidate(&model_config).await {
+                    Ok(count) => {
+                        if count > 0 {
+                            tracing::info!(
+                                "Memory consolidation completed: {} memories consolidated",
+                                count
+                            );
                         }
                     }
-                }
+                    Err(e) => {
+                        tracing::warn!("Memory consolidation failed: {}", e);
+                    }
+                },
                 Err(e) => {
                     tracing::warn!("Failed to connect to memory store for consolidation: {}", e);
                 }
@@ -1177,7 +1185,10 @@ async fn run_server(bind: String, db: PathBuf, api_token: Option<String>) -> any
         .route("/api/memory", get(api_memory_search).post(api_memory_write))
         .route("/api/memory/{id}", delete(api_memory_delete))
         .route("/api/suggestions", get(api_suggestions_list))
-        .route("/api/suggestions/{id}/{action}", post(api_suggestions_update))
+        .route(
+            "/api/suggestions/{id}/{action}",
+            post(api_suggestions_update),
+        )
         .route("/api/sessions/run", post(api_sessions_run))
         .route(
             "/api/sessions/{session_id}/run",
@@ -1476,6 +1487,7 @@ async fn api_agents_create(
     Json(agent): Json<Agent>,
 ) -> Result<Response<Body>, ApiError> {
     require_auth(&headers, &state)?;
+    validate_agent_model_policy(&agent)?;
     state.store.save_agent(&agent).await?;
     state.store.save_agent_card(&card_for_agent(&agent)).await?;
     Ok(json_ok(json!({"agent": agent})))
@@ -1772,7 +1784,9 @@ async fn api_suggestions_list(
         _ => None,
     });
     let suggestions = state.store.get_suggestions(status, 20).await?;
-    Ok(json_ok(json!({"suggestions": suggestions, "count": suggestions.len()})))
+    Ok(json_ok(
+        json!({"suggestions": suggestions, "count": suggestions.len()}),
+    ))
 }
 
 async fn api_suggestions_update(
@@ -1782,12 +1796,25 @@ async fn api_suggestions_update(
 ) -> Result<Response<Body>, ApiError> {
     require_auth(&headers, &state)?;
     let (new_status, event_type) = match action.as_str() {
-        "accept" => (agent1_core::SuggestionStatus::Accepted, Some(agent1_core::EventType::SuggestionAccepted)),
-        "dismiss" => (agent1_core::SuggestionStatus::Dismissed, Some(agent1_core::EventType::SuggestionDismissed)),
+        "accept" => (
+            agent1_core::SuggestionStatus::Accepted,
+            Some(agent1_core::EventType::SuggestionAccepted),
+        ),
+        "dismiss" => (
+            agent1_core::SuggestionStatus::Dismissed,
+            Some(agent1_core::EventType::SuggestionDismissed),
+        ),
         "expire" => (agent1_core::SuggestionStatus::Expired, None),
-        _ => return Err(ApiError::bad_request("invalid action, use accept/dismiss/expire")),
+        _ => {
+            return Err(ApiError::bad_request(
+                "invalid action, use accept/dismiss/expire",
+            ))
+        }
     };
-    state.store.update_suggestion_status(&id, new_status.clone()).await?;
+    state
+        .store
+        .update_suggestion_status(&id, new_status.clone())
+        .await?;
 
     if let Some(evt_type) = event_type {
         let event = agent1_core::RuntimeEvent {
@@ -1801,7 +1828,9 @@ async fn api_suggestions_update(
         state.store.save_event(&event).await?;
     }
 
-    Ok(json_ok(json!({"ok": true, "id": id, "status": new_status.to_string()})))
+    Ok(json_ok(
+        json!({"ok": true, "id": id, "status": new_status.to_string()}),
+    ))
 }
 
 async fn api_well_known_agent(
@@ -2473,9 +2502,24 @@ fn percent_encode(value: &str) -> String {
 async fn list_models_http() -> anyhow::Result<Value> {
     let configs = [
         ModelConfig {
+            provider: "codex".to_string(),
+            model: "unused".to_string(),
+            base_url: None,
+            api_key: None,
+            display_name: None,
+            fallbacks: Vec::new(),
+            context_window: 8192,
+            temperature: 0.2,
+            top_p: None,
+            max_tokens: None,
+        },
+        ModelConfig {
             provider: "opencode".to_string(),
             model: "unused".to_string(),
             base_url: None,
+            api_key: None,
+            display_name: None,
+            fallbacks: Vec::new(),
             context_window: 8192,
             temperature: 0.2,
             top_p: None,
@@ -2485,6 +2529,9 @@ async fn list_models_http() -> anyhow::Result<Value> {
             provider: "ollama".to_string(),
             model: "unused".to_string(),
             base_url: None,
+            api_key: None,
+            display_name: None,
+            fallbacks: Vec::new(),
             context_window: 8192,
             temperature: 0.2,
             top_p: None,
@@ -2494,6 +2541,9 @@ async fn list_models_http() -> anyhow::Result<Value> {
             provider: "openai_compatible".to_string(),
             model: "unused".to_string(),
             base_url: None,
+            api_key: None,
+            display_name: None,
+            fallbacks: Vec::new(),
             context_window: 8192,
             temperature: 0.2,
             top_p: None,
@@ -2503,6 +2553,9 @@ async fn list_models_http() -> anyhow::Result<Value> {
             provider: "nvidia".to_string(),
             model: "unused".to_string(),
             base_url: None,
+            api_key: None,
+            display_name: None,
+            fallbacks: Vec::new(),
             context_window: 8192,
             temperature: 0.2,
             top_p: None,

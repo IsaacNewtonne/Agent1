@@ -60,12 +60,9 @@ impl SqliteStore {
             .map_err(|err| {
                 Agent1Error::Runtime(format!("failed to run collaboration migration: {err}"))
             })?;
-        self.pool
-            .execute(SUGGESTIONS_SCHEMA)
-            .await
-            .map_err(|err| {
-                Agent1Error::Runtime(format!("failed to run suggestions migration: {err}"))
-            })?;
+        self.pool.execute(SUGGESTIONS_SCHEMA).await.map_err(|err| {
+            Agent1Error::Runtime(format!("failed to run suggestions migration: {err}"))
+        })?;
         self.ensure_compat_columns().await?;
         Ok(())
     }
@@ -683,7 +680,18 @@ impl SqliteStore {
         Ok(rows
             .into_iter()
             .map(
-                |(id, suggestion_type, content, trigger_context, related_memory_id, status, created_at, updated_at, accepted_at, dismissed_at)| {
+                |(
+                    id,
+                    suggestion_type,
+                    content,
+                    trigger_context,
+                    related_memory_id,
+                    status,
+                    created_at,
+                    updated_at,
+                    accepted_at,
+                    dismissed_at,
+                )| {
                     Suggestion {
                         id,
                         suggestion_type: parse_enum(&suggestion_type),
@@ -727,7 +735,9 @@ impl SqliteStore {
         .bind(suggestion_id)
         .execute(&self.pool)
         .await
-        .map_err(|err| Agent1Error::Runtime(format!("failed to update suggestion status: {err}")))?;
+        .map_err(|err| {
+            Agent1Error::Runtime(format!("failed to update suggestion status: {err}"))
+        })?;
         Ok(())
     }
 

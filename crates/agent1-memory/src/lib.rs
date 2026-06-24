@@ -85,7 +85,8 @@ pub trait MemoryProvider: Send + Sync {
     async fn search(&self, query: MemorySearchQuery) -> Result<Vec<MemorySearchResult>>;
     async fn update_access(&self, id: &str) -> Result<()>;
     async fn delete(&self, id: &str) -> Result<()>;
-    async fn list(&self, memory_type: Option<MemoryType>, limit: usize) -> Result<Vec<MemoryEntry>>;
+    async fn list(&self, memory_type: Option<MemoryType>, limit: usize)
+        -> Result<Vec<MemoryEntry>>;
     async fn consolidate(&self, model_config: &ModelConfig) -> Result<u32>;
 }
 
@@ -95,10 +96,7 @@ pub struct SemanticMemoryStore {
 
 impl SemanticMemoryStore {
     pub async fn connect(db_path: impl AsRef<Path>) -> Result<Self> {
-        let connection_string = format!(
-            "sqlite:{}?mode=rwc",
-            db_path.as_ref().display()
-        );
+        let connection_string = format!("sqlite:{}?mode=rwc", db_path.as_ref().display());
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(1)
             .connect(&connection_string)
@@ -216,7 +214,11 @@ impl SemanticMemoryStore {
         Ok(())
     }
 
-    pub async fn get_suggestions(&self, status: Option<SuggestionStatus>, limit: usize) -> Result<Vec<Suggestion>> {
+    pub async fn get_suggestions(
+        &self,
+        status: Option<SuggestionStatus>,
+        limit: usize,
+    ) -> Result<Vec<Suggestion>> {
         let status_filter = status.map(|s| s.to_string());
 
         let rows: Vec<(
@@ -265,20 +267,33 @@ impl SemanticMemoryStore {
 
         Ok(rows
             .into_iter()
-            .map(|(id, suggestion_type, content, trigger_context, related_memory_id, status, created_at, updated_at, accepted_at, dismissed_at)| {
-                Suggestion {
+            .map(
+                |(
                     id,
-                    suggestion_type: parse_enum(&suggestion_type),
+                    suggestion_type,
                     content,
                     trigger_context,
                     related_memory_id,
-                    status: parse_enum(&status),
-                    created_at: parse_date(&created_at),
-                    updated_at: parse_date(&updated_at),
-                    accepted_at: accepted_at.and_then(|s| parse_date_opt(&s)),
-                    dismissed_at: dismissed_at.and_then(|s| parse_date_opt(&s)),
-                }
-            })
+                    status,
+                    created_at,
+                    updated_at,
+                    accepted_at,
+                    dismissed_at,
+                )| {
+                    Suggestion {
+                        id,
+                        suggestion_type: parse_enum(&suggestion_type),
+                        content,
+                        trigger_context,
+                        related_memory_id,
+                        status: parse_enum(&status),
+                        created_at: parse_date(&created_at),
+                        updated_at: parse_date(&updated_at),
+                        accepted_at: accepted_at.and_then(|s| parse_date_opt(&s)),
+                        dismissed_at: dismissed_at.and_then(|s| parse_date_opt(&s)),
+                    }
+                },
+            )
             .collect())
     }
 
@@ -409,22 +424,50 @@ impl MemoryProvider for SemanticMemoryStore {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to retrieve memory: {}", e))?;
 
-        Ok(row.map(|(id, content, embedding, memory_type, importance, created_at, last_accessed, access_count, metadata)| {
-            row_to_entry(id, content, embedding, memory_type, importance, created_at, last_accessed, access_count, metadata)
-        }))
+        Ok(row.map(
+            |(
+                id,
+                content,
+                embedding,
+                memory_type,
+                importance,
+                created_at,
+                last_accessed,
+                access_count,
+                metadata,
+            )| {
+                row_to_entry(
+                    id,
+                    content,
+                    embedding,
+                    memory_type,
+                    importance,
+                    created_at,
+                    last_accessed,
+                    access_count,
+                    metadata,
+                )
+            },
+        ))
     }
 
     async fn search(&self, query: MemorySearchQuery) -> Result<Vec<MemorySearchResult>> {
         let query_embedding = self
-            .embed_text(&query.query, &ModelConfig {
-                provider: "ollama".to_string(),
-                model: "llama3.1:8b".to_string(),
-                base_url: Some("http://localhost:11434".to_string()),
-                context_window: 8192,
-                temperature: 0.0,
-                top_p: None,
-                max_tokens: None,
-            })
+            .embed_text(
+                &query.query,
+                &ModelConfig {
+                    provider: "ollama".to_string(),
+                    model: "llama3.1:8b".to_string(),
+                    base_url: Some("http://localhost:11434".to_string()),
+                    api_key: None,
+                    display_name: None,
+                    fallbacks: Vec::new(),
+                    context_window: 8192,
+                    temperature: 0.0,
+                    top_p: None,
+                    max_tokens: None,
+                },
+            )
             .await?;
 
         let type_filter = query
@@ -442,27 +485,58 @@ impl MemoryProvider for SemanticMemoryStore {
             type_filter.as_deref().unwrap_or("")
         );
 
-        let rows: Vec<(String, String, Vec<u8>, String, f32, String, String, i64, String)> =
-            sqlx::query_as(&sql)
-                .fetch_all(&self.pool)
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to search memories: {}", e))?;
+        let rows: Vec<(
+            String,
+            String,
+            Vec<u8>,
+            String,
+            f32,
+            String,
+            String,
+            i64,
+            String,
+        )> = sqlx::query_as(&sql)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to search memories: {}", e))?;
 
         let mut results: Vec<MemorySearchResult> = rows
             .into_iter()
-            .filter_map(|(id, content, embedding, memory_type, importance, created_at, last_accessed, access_count, metadata)| {
-                let embedding_vec = blob_to_embedding(embedding.clone());
-                let similarity = cosine_similarity(&query_embedding, &embedding_vec);
+            .filter_map(
+                |(
+                    id,
+                    content,
+                    embedding,
+                    memory_type,
+                    importance,
+                    created_at,
+                    last_accessed,
+                    access_count,
+                    metadata,
+                )| {
+                    let embedding_vec = blob_to_embedding(embedding.clone());
+                    let similarity = cosine_similarity(&query_embedding, &embedding_vec);
 
-                if similarity < query.min_relevance {
-                    return None;
-                }
+                    if similarity < query.min_relevance {
+                        return None;
+                    }
 
-                Some(MemorySearchResult {
-                    entry: row_to_entry(id, content, embedding, memory_type, importance, created_at, last_accessed, access_count, metadata),
-                    similarity,
-                })
-            })
+                    Some(MemorySearchResult {
+                        entry: row_to_entry(
+                            id,
+                            content,
+                            embedding,
+                            memory_type,
+                            importance,
+                            created_at,
+                            last_accessed,
+                            access_count,
+                            metadata,
+                        ),
+                        similarity,
+                    })
+                },
+            )
             .collect();
 
         results.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap());
@@ -496,7 +570,11 @@ impl MemoryProvider for SemanticMemoryStore {
         Ok(())
     }
 
-    async fn list(&self, memory_type: Option<MemoryType>, limit: usize) -> Result<Vec<MemoryEntry>> {
+    async fn list(
+        &self,
+        memory_type: Option<MemoryType>,
+        limit: usize,
+    ) -> Result<Vec<MemoryEntry>> {
         let type_filter = memory_type.map(|mt| format!("WHERE memory_type = '{}'", mt.to_string()));
 
         let sql = format!(
@@ -510,18 +588,49 @@ impl MemoryProvider for SemanticMemoryStore {
             type_filter.as_deref().unwrap_or("WHERE 1=1")
         );
 
-        let rows: Vec<(String, String, Vec<u8>, String, f32, String, String, i64, String)> =
-            sqlx::query_as(&sql)
-                .bind(limit as i64)
-                .fetch_all(&self.pool)
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to list memories: {}", e))?;
+        let rows: Vec<(
+            String,
+            String,
+            Vec<u8>,
+            String,
+            f32,
+            String,
+            String,
+            i64,
+            String,
+        )> = sqlx::query_as(&sql)
+            .bind(limit as i64)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to list memories: {}", e))?;
 
         Ok(rows
             .into_iter()
-            .map(|(id, content, embedding, memory_type, importance, created_at, last_accessed, access_count, metadata)| {
-                row_to_entry(id, content, embedding, memory_type, importance, created_at, last_accessed, access_count, metadata)
-            })
+            .map(
+                |(
+                    id,
+                    content,
+                    embedding,
+                    memory_type,
+                    importance,
+                    created_at,
+                    last_accessed,
+                    access_count,
+                    metadata,
+                )| {
+                    row_to_entry(
+                        id,
+                        content,
+                        embedding,
+                        memory_type,
+                        importance,
+                        created_at,
+                        last_accessed,
+                        access_count,
+                        metadata,
+                    )
+                },
+            )
             .collect())
     }
 
@@ -556,7 +665,11 @@ impl MemoryProvider for SemanticMemoryStore {
         let mut consolidated_count = 0u32;
 
         for chunk in sorted_memories.chunks(10) {
-            let combined: String = chunk.iter().map(|(_, c, _)| c as &str).collect::<Vec<_>>().join("\n---\n");
+            let combined: String = chunk
+                .iter()
+                .map(|(_, c, _)| c as &str)
+                .collect::<Vec<_>>()
+                .join("\n---\n");
             let prompt = format!(
                 "Summarize the following memories into a single concise fact or pattern. Keep only the most important information. Return only the summary, no explanation.\n\n{}",
                 combined
@@ -588,7 +701,10 @@ impl MemoryProvider for SemanticMemoryStore {
             }
         }
 
-        for (id, _, _) in sorted_memories.iter().take(consolidated_count as usize * 10) {
+        for (id, _, _) in sorted_memories
+            .iter()
+            .take(consolidated_count as usize * 10)
+        {
             let _ = sqlx::query("DELETE FROM semantic_memories WHERE id = ?")
                 .bind(id)
                 .execute(&self.pool)
@@ -626,9 +742,7 @@ where
                 let mut chars = part.chars();
                 match chars.next() {
                     None => String::new(),
-                    Some(first) => {
-                        first.to_uppercase().to_string() + chars.as_str()
-                    }
+                    Some(first) => first.to_uppercase().to_string() + chars.as_str(),
                 }
             })
             .collect::<String>()
@@ -860,18 +974,33 @@ mod tests {
 
         store.store_suggestion(&suggestion).await.unwrap();
 
-        store.update_suggestion_status(&suggestion.id, SuggestionStatus::Accepted).await.unwrap();
+        store
+            .update_suggestion_status(&suggestion.id, SuggestionStatus::Accepted)
+            .await
+            .unwrap();
 
-        let accepted = store.get_suggestions(Some(SuggestionStatus::Accepted), 10).await.unwrap();
+        let accepted = store
+            .get_suggestions(Some(SuggestionStatus::Accepted), 10)
+            .await
+            .unwrap();
         assert_eq!(accepted.len(), 1);
         assert_eq!(accepted[0].id, suggestion.id);
         assert!(accepted[0].accepted_at.is_some());
 
-        store.update_suggestion_status(&suggestion.id, SuggestionStatus::Dismissed).await.unwrap();
+        store
+            .update_suggestion_status(&suggestion.id, SuggestionStatus::Dismissed)
+            .await
+            .unwrap();
 
-        let pending = store.get_suggestions(Some(SuggestionStatus::Pending), 10).await.unwrap();
+        let pending = store
+            .get_suggestions(Some(SuggestionStatus::Pending), 10)
+            .await
+            .unwrap();
         assert!(pending.is_empty());
-        let dismissed = store.get_suggestions(Some(SuggestionStatus::Dismissed), 10).await.unwrap();
+        let dismissed = store
+            .get_suggestions(Some(SuggestionStatus::Dismissed), 10)
+            .await
+            .unwrap();
         assert_eq!(dismissed.len(), 1);
         assert!(dismissed[0].dismissed_at.is_some());
     }
@@ -941,6 +1070,9 @@ mod tests {
             provider: "mock".to_string(),
             model: "test".to_string(),
             base_url: None,
+            api_key: None,
+            display_name: None,
+            fallbacks: Vec::new(),
             context_window: 8192,
             temperature: 0.0,
             top_p: None,

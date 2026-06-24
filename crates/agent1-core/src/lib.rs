@@ -172,6 +172,17 @@ pub struct Agent {
     pub max_iterations: u32,
 }
 
+pub fn validate_agent_model_policy(agent: &Agent) -> Result<()> {
+    if agent.model.provider.eq_ignore_ascii_case("codex")
+        && !agent.id.eq_ignore_ascii_case("agent1")
+    {
+        return Err(Agent1Error::Config(
+            "only Agent1 may use the Codex model provider".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 fn default_max_iterations() -> u32 {
     12
 }
@@ -182,6 +193,12 @@ pub struct ModelConfig {
     pub model: String,
     #[serde(default)]
     pub base_url: Option<String>,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub fallbacks: Vec<ModelConfig>,
     #[serde(default = "default_context_window")]
     pub context_window: u32,
     #[serde(default = "default_temperature")]
@@ -1286,5 +1303,36 @@ mod tests {
         assert!(matches!(PermissionMode::Allow, PermissionMode::Allow));
         assert!(matches!(PermissionMode::Deny, PermissionMode::Deny));
         assert!(matches!(PermissionMode::Ask, PermissionMode::Ask));
+    }
+
+    #[test]
+    fn codex_provider_is_reserved_for_agent1() {
+        let mut agent = Agent {
+            id: "worker".to_string(),
+            name: "Worker".to_string(),
+            description: None,
+            role: None,
+            system_prompt: "test".to_string(),
+            model: ModelConfig {
+                provider: "codex".to_string(),
+                model: "gpt-5".to_string(),
+                base_url: None,
+                api_key: None,
+                display_name: None,
+                fallbacks: Vec::new(),
+                context_window: 8192,
+                temperature: 0.2,
+                top_p: None,
+                max_tokens: None,
+            },
+            tools: Vec::new(),
+            memory: MemoryConfig::default(),
+            permissions: PermissionPolicy::default(),
+            max_iterations: 1,
+        };
+
+        assert!(validate_agent_model_policy(&agent).is_err());
+        agent.id = "agent1".to_string();
+        assert!(validate_agent_model_policy(&agent).is_ok());
     }
 }

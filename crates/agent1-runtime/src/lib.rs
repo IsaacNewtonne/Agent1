@@ -6,10 +6,10 @@ use std::{
 };
 
 use agent1_core::{
-    new_id, now, Agent, Agent1Error, ApprovalRecord, ChatMessage, ChatRequest, CollaborationMode,
-    EventType, McpServerConfig, MemoryItem, Message, MessageRole, PermissionMode, Result,
-    RuntimeEvent, Session, SessionStatus, ToolCallRecord, ToolCallStatus, ToolDefinition,
-    ToolResult,
+    new_id, now, validate_agent_model_policy, Agent, Agent1Error, ApprovalRecord, ChatMessage,
+    ChatRequest, ChatStreamResponse, CollaborationMode, EventType, McpServerConfig, MemoryItem,
+    Message, MessageRole, PermissionMode, Result, RuntimeEvent, Session, SessionStatus,
+    ToolCallRecord, ToolCallStatus, ToolDefinition, ToolResult,
 };
 use agent1_db::SqliteStore;
 use agent1_models::provider_for;
@@ -99,6 +99,7 @@ impl<A: ApprovalDelegate + Clone> AgentRuntime<A> {
                 Agent1Error::Runtime("concurrent session limit reached".to_string())
             })?;
         let mut agent = request.agent.clone();
+        validate_agent_model_policy(&agent)?;
         self.apply_project_policy(&mut agent, request.project_id.as_deref())
             .await?;
         self.store.save_agent(&request.agent).await?;
@@ -126,7 +127,6 @@ impl<A: ApprovalDelegate + Clone> AgentRuntime<A> {
         )
         .await?;
 
-        let provider = provider_for(&agent.model)?;
         let memory_context = if agent.memory.enabled {
             let memories = self
                 .store
@@ -179,12 +179,7 @@ impl<A: ApprovalDelegate + Clone> AgentRuntime<A> {
                 json!({"iteration": iteration}),
             )
             .await?;
-            let response = match provider
-                .chat_stream(ChatRequest {
-                    model: agent.model.clone(),
-                    messages: conversation.clone(),
-                })
-                .await
+            let response = match call_model_with_fallbacks(&agent.model, conversation.clone()).await
             {
                 Ok(response) => response,
                 Err(err) => {
@@ -795,6 +790,55 @@ fn render_memory_context(memories: &[MemoryItem]) -> Option<String> {
         .collect::<Vec<_>>()
         .join("\n");
     Some(lines)
+}
+
+async fn call_model_with_fallbacks(
+    primary: &agent1_core::ModelConfig,
+    messages: Vec<ChatMessage>,
+) -> Result<ChatStreamResponse> {
+    let candidates = model_candidates(primary);
+    let mut errors = Vec::new();
+    for candidate in candidates {
+        let provider = match provider_for(&candidate) {
+            Ok(provider) => provider,
+            Err(err) => {
+                errors.push(format!("{}: {err}", model_label(&candidate)));
+                continue;
+            }
+        };
+        match provider
+            .chat_stream(ChatRequest {
+                model: candidate.clone(),
+                messages: messages.clone(),
+            })
+            .await
+        {
+            Ok(response) => return Ok(response),
+            Err(err) => errors.push(format!("{}: {err}", model_label(&candidate))),
+        }
+    }
+    Err(Agent1Error::Runtime(format!(
+        "all model providers failed: {}",
+        errors.join(" | ")
+    )))
+}
+
+fn model_candidates(primary: &agent1_core::ModelConfig) -> Vec<agent1_core::ModelConfig> {
+    let mut primary = primary.clone();
+    let fallbacks = std::mem::take(&mut primary.fallbacks);
+    let mut candidates = vec![primary];
+    for mut fallback in fallbacks {
+        fallback.fallbacks.clear();
+        candidates.push(fallback);
+    }
+    candidates
+}
+
+fn model_label(config: &agent1_core::ModelConfig) -> String {
+    config
+        .display_name
+        .clone()
+        .unwrap_or_else(|| format!("{}/{}", config.provider, config.model))
 }
 
 pub fn runtime_tool_definition(tool_name: &str) -> Option<ToolDefinition> {
@@ -1534,6 +1578,9 @@ mod tests {
                 provider: "mock".to_string(),
                 model: model.to_string(),
                 base_url: None,
+                api_key: None,
+                display_name: None,
+                fallbacks: Vec::new(),
                 context_window: 8192,
                 temperature: 0.0,
                 top_p: None,

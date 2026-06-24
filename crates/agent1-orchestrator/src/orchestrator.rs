@@ -93,7 +93,10 @@ impl Orchestrator {
         // Recall relevant memories before planning
         let relevant_context = self.recall_relevant_context(&request.objective).await;
         if !relevant_context.is_empty() {
-            tracing::info!("Recalled {} relevant memories for context", relevant_context.len());
+            tracing::info!(
+                "Recalled {} relevant memories for context",
+                relevant_context.len()
+            );
         }
 
         session.status = OrchestrationStatus::Planning;
@@ -108,7 +111,9 @@ impl Orchestrator {
             .await?;
 
         for (sub_plan_id, sub_steps) in &plan_view.sub_steps {
-            self.progress.save_sub_steps(sub_plan_id, sub_steps.to_vec()).await?;
+            self.progress
+                .save_sub_steps(sub_plan_id, sub_steps.to_vec())
+                .await?;
         }
 
         session.plan_id = Some(plan_view.plan.id.clone());
@@ -241,7 +246,12 @@ impl Orchestrator {
         }
     }
 
-    async fn generate_suggestions(&self, plan: &agent1_core::ExecutionPlan, steps: &[ExecutionStep], session_id: &str) {
+    async fn generate_suggestions(
+        &self,
+        plan: &agent1_core::ExecutionPlan,
+        steps: &[ExecutionStep],
+        session_id: &str,
+    ) {
         let Some(ref memory) = self.memory else {
             return;
         };
@@ -259,40 +269,74 @@ impl Orchestrator {
             let suggestion = agent1_core::Suggestion::new(
                 agent1_core::SuggestionType::FollowUp,
                 format!("Retry or alternative approach for: {}", step.description),
-                format!("Failed step in plan {} - original error: {}", plan.id, step.output.as_ref().unwrap_or(&String::new())),
+                format!(
+                    "Failed step in plan {} - original error: {}",
+                    plan.id,
+                    step.output.as_ref().unwrap_or(&String::new())
+                ),
                 None,
             );
 
             if let Err(e) = memory.store_suggestion(&suggestion).await {
                 tracing::warn!("Failed to store suggestion: {}", e);
             } else {
-                tracing::debug!("Generated follow-up suggestion for failed step: {}", step.id);
-                let _ = self.emit(session_id, None, EventType::SuggestionCreated, json!({"suggestion": suggestion}));
+                tracing::debug!(
+                    "Generated follow-up suggestion for failed step: {}",
+                    step.id
+                );
+                let _ = self.emit(
+                    session_id,
+                    None,
+                    EventType::SuggestionCreated,
+                    json!({"suggestion": suggestion}),
+                );
             }
         }
 
         if plan.status != agent1_core::PlanStatus::Completed && !steps.is_empty() {
-            let pending_count = steps.iter().filter(|s| s.status == StepStatus::Pending || s.status == StepStatus::Blocked).count();
+            let pending_count = steps
+                .iter()
+                .filter(|s| s.status == StepStatus::Pending || s.status == StepStatus::Blocked)
+                .count();
             if pending_count > 0 {
                 let suggestion = agent1_core::Suggestion::new(
                     agent1_core::SuggestionType::FollowUp,
-                    format!("Continue incomplete objective: {} ({} steps remaining)", plan.objective, pending_count),
-                    format!("Plan {} was not completed - {} of {} steps remain", plan.id, pending_count, steps.len()),
+                    format!(
+                        "Continue incomplete objective: {} ({} steps remaining)",
+                        plan.objective, pending_count
+                    ),
+                    format!(
+                        "Plan {} was not completed - {} of {} steps remain",
+                        plan.id,
+                        pending_count,
+                        steps.len()
+                    ),
                     None,
                 );
 
                 if let Err(e) = memory.store_suggestion(&suggestion).await {
                     tracing::warn!("Failed to store suggestion: {}", e);
                 } else {
-                    tracing::debug!("Generated follow-up suggestion for incomplete plan: {}", plan.id);
-                    let _ = self.emit(session_id, None, EventType::SuggestionCreated, json!({"suggestion": suggestion}));
+                    tracing::debug!(
+                        "Generated follow-up suggestion for incomplete plan: {}",
+                        plan.id
+                    );
+                    let _ = self.emit(
+                        session_id,
+                        None,
+                        EventType::SuggestionCreated,
+                        json!({"suggestion": suggestion}),
+                    );
                 }
             }
         }
 
-        self.generate_improvement_suggestions(memory, plan, steps, session_id).await;
-        self.generate_routine_suggestions(memory, plan, steps, session_id).await;
-        self.generate_contextual_suggestions(memory, plan, steps, session_id).await;
+        self.generate_improvement_suggestions(memory, plan, steps, session_id)
+            .await;
+        self.generate_routine_suggestions(memory, plan, steps, session_id)
+            .await;
+        self.generate_contextual_suggestions(memory, plan, steps, session_id)
+            .await;
     }
 
     async fn generate_improvement_suggestions(
@@ -330,7 +374,12 @@ impl Orchestrator {
                 tracing::warn!("Failed to store improvement suggestion: {}", e);
             } else {
                 tracing::debug!("Generated improvement suggestion for plan: {}", plan.id);
-                let _ = self.emit(session_id, None, EventType::SuggestionCreated, json!({"suggestion": suggestion}));
+                let _ = self.emit(
+                    session_id,
+                    None,
+                    EventType::SuggestionCreated,
+                    json!({"suggestion": suggestion}),
+                );
             }
         }
 
@@ -364,7 +413,12 @@ impl Orchestrator {
             if let Err(e) = memory.store_suggestion(&suggestion).await {
                 tracing::warn!("Failed to store speed improvement suggestion: {}", e);
             } else {
-                let _ = self.emit(session_id, None, EventType::SuggestionCreated, json!({"suggestion": suggestion}));
+                let _ = self.emit(
+                    session_id,
+                    None,
+                    EventType::SuggestionCreated,
+                    json!({"suggestion": suggestion}),
+                );
             }
         }
     }
@@ -379,7 +433,10 @@ impl Orchestrator {
         let task_memories = match memory.list(Some(agent1_memory::MemoryType::Task), 20).await {
             Ok(mems) => mems,
             Err(e) => {
-                tracing::warn!("Failed to list task memories for routine suggestions: {}", e);
+                tracing::warn!(
+                    "Failed to list task memories for routine suggestions: {}",
+                    e
+                );
                 return;
             }
         };
@@ -414,13 +471,22 @@ impl Orchestrator {
             if let Err(e) = memory.store_suggestion(&suggestion).await {
                 tracing::warn!("Failed to store routine suggestion: {}", e);
             } else {
-                tracing::debug!("Generated routine suggestion based on {} recent tasks", recent_task_count);
-                let _ = self.emit(session_id, None, EventType::SuggestionCreated, json!({"suggestion": suggestion}));
+                tracing::debug!(
+                    "Generated routine suggestion based on {} recent tasks",
+                    recent_task_count
+                );
+                let _ = self.emit(
+                    session_id,
+                    None,
+                    EventType::SuggestionCreated,
+                    json!({"suggestion": suggestion}),
+                );
             }
         }
 
         let pattern_keywords = ["build", "test", "deploy", "review", "analyze"];
-        let mut keyword_counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        let mut keyword_counts: std::collections::HashMap<&str, usize> =
+            std::collections::HashMap::new();
 
         for mem in &task_memories {
             let content_lower = mem.content.to_lowercase();
@@ -443,7 +509,12 @@ impl Orchestrator {
                 if let Err(e) = memory.store_suggestion(&suggestion).await {
                     tracing::warn!("Failed to store {} routine suggestion: {}", most_common, e);
                 } else {
-                    let _ = self.emit(session_id, None, EventType::SuggestionCreated, json!({"suggestion": suggestion}));
+                    let _ = self.emit(
+                        session_id,
+                        None,
+                        EventType::SuggestionCreated,
+                        json!({"suggestion": suggestion}),
+                    );
                 }
             }
         }
@@ -482,29 +553,51 @@ impl Orchestrator {
             .collect::<Vec<_>>()
             .join(" | ");
 
-        let similarity_avg: f32 = related_results
-            .iter()
-            .map(|r| r.similarity)
-            .sum::<f32>() / related_results.len() as f32;
+        let similarity_avg: f32 = related_results.iter().map(|r| r.similarity).sum::<f32>()
+            / related_results.len() as f32;
 
         if similarity_avg > 0.7 {
             let suggestion = agent1_core::Suggestion::new(
                 agent1_core::SuggestionType::Contextual,
-                format!("Building on past work: {}", plan.objective.chars().take(40).collect::<String>()),
-                format!("Found {} related memories with high similarity ({:.1}%): {}", related_results.len(), similarity_avg * 100.0, related_summary.chars().take(150).collect::<String>()),
-                Some(related_results.first().map(|r| r.entry.id.clone()).unwrap_or_default()),
+                format!(
+                    "Building on past work: {}",
+                    plan.objective.chars().take(40).collect::<String>()
+                ),
+                format!(
+                    "Found {} related memories with high similarity ({:.1}%): {}",
+                    related_results.len(),
+                    similarity_avg * 100.0,
+                    related_summary.chars().take(150).collect::<String>()
+                ),
+                Some(
+                    related_results
+                        .first()
+                        .map(|r| r.entry.id.clone())
+                        .unwrap_or_default(),
+                ),
             );
 
             if let Err(e) = memory.store_suggestion(&suggestion).await {
                 tracing::warn!("Failed to store contextual suggestion: {}", e);
             } else {
-                tracing::debug!("Generated contextual suggestion with {} related memories", related_results.len());
-                let _ = self.emit(session_id, None, EventType::SuggestionCreated, json!({"suggestion": suggestion}));
+                tracing::debug!(
+                    "Generated contextual suggestion with {} related memories",
+                    related_results.len()
+                );
+                let _ = self.emit(
+                    session_id,
+                    None,
+                    EventType::SuggestionCreated,
+                    json!({"suggestion": suggestion}),
+                );
             }
         }
     }
 
-    async fn get_suggestions(&self, status: Option<agent1_core::SuggestionStatus>) -> Result<Vec<agent1_core::Suggestion>> {
+    async fn get_suggestions(
+        &self,
+        status: Option<agent1_core::SuggestionStatus>,
+    ) -> Result<Vec<agent1_core::Suggestion>> {
         let Some(ref memory) = self.memory else {
             return Ok(Vec::new());
         };
@@ -513,13 +606,20 @@ impl Orchestrator {
         })
     }
 
-    async fn update_suggestion_status(&self, id: &str, status: agent1_core::SuggestionStatus) -> Result<()> {
+    async fn update_suggestion_status(
+        &self,
+        id: &str,
+        status: agent1_core::SuggestionStatus,
+    ) -> Result<()> {
         let Some(ref memory) = self.memory else {
             return Ok(());
         };
-        memory.update_suggestion_status(id, status).await.map_err(|e| {
-            agent1_core::Agent1Error::Runtime(format!("Failed to update suggestion: {}", e))
-        })
+        memory
+            .update_suggestion_status(id, status)
+            .await
+            .map_err(|e| {
+                agent1_core::Agent1Error::Runtime(format!("Failed to update suggestion: {}", e))
+            })
     }
 
     async fn get_embedding(&self, text: &str) -> Result<Vec<f32>> {
@@ -732,8 +832,12 @@ impl Orchestrator {
 
                             let critique_result_json = match &critique {
                                 CritiqueResult::Approved => json!({"critique": "approved"}),
-                                CritiqueResult::NeedsRevision { reason } => json!({"critique": "needs_revision", "reason": reason}),
-                                CritiqueResult::Failed { reason } => json!({"critique": "failed", "reason": reason}),
+                                CritiqueResult::NeedsRevision { reason } => {
+                                    json!({"critique": "needs_revision", "reason": reason})
+                                }
+                                CritiqueResult::Failed { reason } => {
+                                    json!({"critique": "failed", "reason": reason})
+                                }
                             };
 
                             if let Err(e) = self.progress.save_step(step).await {
@@ -754,7 +858,11 @@ impl Orchestrator {
                                 }
                                 CritiqueResult::Failed { reason } => {
                                     tracing::warn!("Step {} failed critique: {}", step.id, reason);
-                                    step.output = Some(format!("{} [CRITIQUE FAILED: {}]", step.output.clone().unwrap_or_default(), reason));
+                                    step.output = Some(format!(
+                                        "{} [CRITIQUE FAILED: {}]",
+                                        step.output.clone().unwrap_or_default(),
+                                        reason
+                                    ));
                                     step.status = StepStatus::Failed;
                                     let _ = self.progress.save_step(step).await;
                                 }
@@ -762,15 +870,31 @@ impl Orchestrator {
                             }
 
                             if let Some(sub_plan_id) = &step.sub_plan_id {
-                                match self.execute_sub_plan(step, session, workspace_root, auto_approve).await {
+                                match self
+                                    .execute_sub_plan(step, session, workspace_root, auto_approve)
+                                    .await
+                                {
                                     Ok(sub_output) => {
-                                        tracing::info!("Sub-plan {} completed for step {}", sub_plan_id, step.id);
-                                        step.output = Some(format!("{}\n\n[SUB-PLAN {} COMPLETED]\n{}", 
-                                            step.output.clone().unwrap_or_default(), sub_plan_id, sub_output));
+                                        tracing::info!(
+                                            "Sub-plan {} completed for step {}",
+                                            sub_plan_id,
+                                            step.id
+                                        );
+                                        step.output = Some(format!(
+                                            "{}\n\n[SUB-PLAN {} COMPLETED]\n{}",
+                                            step.output.clone().unwrap_or_default(),
+                                            sub_plan_id,
+                                            sub_output
+                                        ));
                                         let _ = self.progress.save_step(step).await;
                                     }
                                     Err(e) => {
-                                        tracing::error!("Sub-plan {} failed for step {}: {}", sub_plan_id, step.id, e);
+                                        tracing::error!(
+                                            "Sub-plan {} failed for step {}: {}",
+                                            sub_plan_id,
+                                            step.id,
+                                            e
+                                        );
                                     }
                                 }
                             }
@@ -793,7 +917,11 @@ impl Orchestrator {
     async fn critique_step(&self, step: &ExecutionStep) -> CritiqueResult {
         let output = match &step.output {
             Some(o) => o,
-            None => return CritiqueResult::Failed { reason: "No output produced".to_string() },
+            None => {
+                return CritiqueResult::Failed {
+                    reason: "No output produced".to_string(),
+                }
+            }
         };
 
         let critique_prompt = format!(
@@ -865,21 +993,28 @@ Rules:
             trimmed
         };
 
-        let json: serde_json::Value = serde_json::from_str(cleaned)
-            .map_err(|e| agent1_core::Agent1Error::InvalidModelResponse(format!("invalid JSON: {}", e)))?;
+        let json: serde_json::Value = serde_json::from_str(cleaned).map_err(|e| {
+            agent1_core::Agent1Error::InvalidModelResponse(format!("invalid JSON: {}", e))
+        })?;
 
-        let approved = json.get("approved")
+        let approved = json
+            .get("approved")
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
 
-        let reason = json.get("reason")
+        let reason = json
+            .get("reason")
             .and_then(|v| v.as_str())
             .unwrap_or("No reason provided")
             .to_string();
 
         if approved {
             Ok(CritiqueResult::Approved)
-        } else if json.get("needs_revision").and_then(|v| v.as_bool()).unwrap_or(false) {
+        } else if json
+            .get("needs_revision")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
             Ok(CritiqueResult::NeedsRevision { reason })
         } else {
             Ok(CritiqueResult::Failed { reason })
@@ -903,7 +1038,9 @@ Rules:
 
         if let Some(sub_steps_data) = self.progress.get_sub_steps(sub_plan_id).await? {
             for sub_step in sub_steps_data {
-                let role = sub_step.assigned_role.unwrap_or(agent1_core::AgentRole::Worker);
+                let role = sub_step
+                    .assigned_role
+                    .unwrap_or(agent1_core::AgentRole::Worker);
 
                 let agent = self
                     .team_manager

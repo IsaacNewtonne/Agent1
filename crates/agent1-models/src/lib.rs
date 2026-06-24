@@ -23,7 +23,9 @@ pub trait ModelProvider: Send + Sync {
     async fn list_models(&self, config: &ModelConfig) -> Result<Vec<ModelInfo>>;
     async fn embeddings(&self, prompt: &str, config: &ModelConfig) -> Result<Vec<f32>> {
         let _ = (prompt, config);
-        Err(Agent1Error::Config("embeddings not supported for this provider".to_string()))
+        Err(Agent1Error::Config(
+            "embeddings not supported for this provider".to_string(),
+        ))
     }
 }
 
@@ -32,6 +34,7 @@ pub fn provider_for(config: &ModelConfig) -> Result<Box<dyn ModelProvider>> {
         "mock" => Ok(Box::new(MockProvider)),
         "ollama" => Ok(Box::new(OllamaProvider::new())),
         "opencode" => Ok(Box::new(OpenCodeProvider)),
+        "codex" => Ok(Box::new(OpenAiCompatibleProvider::new())),
         "openai_compatible" | "openai-compatible" | "local_openai" => {
             Ok(Box::new(OpenAiCompatibleProvider::new()))
         }
@@ -437,7 +440,9 @@ impl ModelProvider for OllamaProvider {
                 Agent1Error::Runtime(format!("ollama embeddings returned an error: {err}"))
             })?;
         let body: OllamaEmbeddingsResponse = response.json().await.map_err(|err| {
-            Agent1Error::InvalidModelResponse(format!("ollama embeddings response was not JSON: {err}"))
+            Agent1Error::InvalidModelResponse(format!(
+                "ollama embeddings response was not JSON: {err}"
+            ))
         })?;
         Ok(body.embedding)
     }
@@ -558,17 +563,21 @@ impl ModelProvider for OpenAiCompatibleProvider {
             .model
             .base_url
             .clone()
-            .unwrap_or_else(|| "http://localhost:8000/v1".to_string());
-        let response = self
+            .unwrap_or_else(|| default_openai_base_url(&request.model.provider));
+        let mut builder = self
             .client
             .post(format!("{base_url}/chat/completions"))
             .json(&OpenAiChatRequest {
-                model: request.model.model,
+                model: request.model.model.clone(),
                 messages: request.messages,
                 temperature: Some(request.model.temperature as f64),
                 max_tokens: request.model.max_tokens.map(|m| m as i64),
                 stream: None,
-            })
+            });
+        if let Some(api_key) = api_key_for(&request.model) {
+            builder = builder.bearer_auth(api_key);
+        }
+        let response = builder
             .send()
             .await
             .map_err(|err| map_request_error("OpenAI-compatible chat request", err))?
@@ -597,17 +606,21 @@ impl ModelProvider for OpenAiCompatibleProvider {
             .model
             .base_url
             .clone()
-            .unwrap_or_else(|| "http://localhost:8000/v1".to_string());
-        let response = self
+            .unwrap_or_else(|| default_openai_base_url(&request.model.provider));
+        let mut builder = self
             .client
             .post(format!("{base_url}/chat/completions"))
             .json(&OpenAiChatRequest {
-                model: request.model.model,
+                model: request.model.model.clone(),
                 messages: request.messages,
                 temperature: Some(request.model.temperature as f64),
                 max_tokens: request.model.max_tokens.map(|m| m as i64),
                 stream: Some(true),
-            })
+            });
+        if let Some(api_key) = api_key_for(&request.model) {
+            builder = builder.bearer_auth(api_key);
+        }
+        let response = builder
             .send()
             .await
             .map_err(|err| map_request_error("OpenAI-compatible chat stream request", err))?
@@ -654,10 +667,12 @@ impl ModelProvider for OpenAiCompatibleProvider {
         let base_url = config
             .base_url
             .clone()
-            .unwrap_or_else(|| "http://localhost:8000/v1".to_string());
-        let response = self
-            .client
-            .get(format!("{base_url}/models"))
+            .unwrap_or_else(|| default_openai_base_url(&config.provider));
+        let mut builder = self.client.get(format!("{base_url}/models"));
+        if let Some(api_key) = api_key_for(config) {
+            builder = builder.bearer_auth(api_key);
+        }
+        let response = builder
             .send()
             .await
             .map_err(|err| map_request_error("OpenAI-compatible list models request", err))?
@@ -676,7 +691,7 @@ impl ModelProvider for OpenAiCompatibleProvider {
             .data
             .into_iter()
             .map(|model| ModelInfo {
-                provider: "openai_compatible".to_string(),
+                provider: config.provider.clone(),
                 name: model.id,
             })
             .collect())
@@ -686,27 +701,38 @@ impl ModelProvider for OpenAiCompatibleProvider {
         let base_url = config
             .base_url
             .clone()
-            .unwrap_or_else(|| "http://localhost:8000/v1".to_string());
-        let response = self
-            .client
-            .post(format!("{base_url}/embeddings"))
-            .json(&OpenAiEmbeddingsRequest {
-                model: &config.model,
-                input: prompt,
-            })
+            .unwrap_or_else(|| default_openai_base_url(&config.provider));
+        let mut builder =
+            self.client
+                .post(format!("{base_url}/embeddings"))
+                .json(&OpenAiEmbeddingsRequest {
+                    model: &config.model,
+                    input: prompt,
+                });
+        if let Some(api_key) = api_key_for(config) {
+            builder = builder.bearer_auth(api_key);
+        }
+        let response = builder
             .send()
             .await
             .map_err(|err| map_request_error("OpenAI-compatible embeddings request", err))?
             .error_for_status()
             .map_err(|err| {
-                Agent1Error::Runtime(format!("OpenAI-compatible embeddings returned an error: {err}"))
+                Agent1Error::Runtime(format!(
+                    "OpenAI-compatible embeddings returned an error: {err}"
+                ))
             })?;
         let body: OpenAiEmbeddingsResponse = response.json().await.map_err(|err| {
             Agent1Error::InvalidModelResponse(format!(
                 "OpenAI-compatible embeddings response was not JSON: {err}"
             ))
         })?;
-        Ok(body.data.into_iter().next().map(|e| e.embedding).unwrap_or_default())
+        Ok(body
+            .data
+            .into_iter()
+            .next()
+            .map(|e| e.embedding)
+            .unwrap_or_default())
     }
 }
 
@@ -737,7 +763,7 @@ impl ModelProvider for NvidiaProvider {
         let response = self
             .client
             .post(format!("{base_url}/chat/completions"))
-            .bearer_auth(self.api_key()?)
+            .bearer_auth(api_key_for(&request.model).unwrap_or(self.api_key()?))
             .json(&OpenAiChatRequest {
                 model: request.model.model,
                 messages: request.messages,
@@ -775,7 +801,7 @@ impl ModelProvider for NvidiaProvider {
         let response = self
             .client
             .post(format!("{base_url}/chat/completions"))
-            .bearer_auth(self.api_key()?)
+            .bearer_auth(api_key_for(&request.model).unwrap_or(self.api_key()?))
             .json(&OpenAiChatRequest {
                 model: request.model.model,
                 messages: request.messages,
@@ -834,7 +860,7 @@ impl ModelProvider for NvidiaProvider {
         let response = self
             .client
             .get(format!("{base_url}/models"))
-            .bearer_auth(self.api_key()?)
+            .bearer_auth(api_key_for(config).unwrap_or(self.api_key()?))
             .send()
             .await
             .map_err(|err| map_request_error("NVIDIA NIM list models request", err))?
@@ -856,6 +882,29 @@ impl ModelProvider for NvidiaProvider {
             })
             .collect())
     }
+}
+
+fn default_openai_base_url(provider: &str) -> String {
+    if provider == "codex" {
+        "https://api.openai.com/v1".to_string()
+    } else {
+        "http://localhost:8000/v1".to_string()
+    }
+}
+
+fn api_key_for(config: &ModelConfig) -> Option<String> {
+    config
+        .api_key
+        .clone()
+        .or_else(|| {
+            if config.provider == "codex" {
+                env::var("OPENAI_API_KEY").ok()
+            } else {
+                None
+            }
+        })
+        .map(|key| key.trim().to_string())
+        .filter(|key| !key.is_empty())
 }
 
 #[derive(Debug, Serialize)]
@@ -967,6 +1016,9 @@ mod tests {
             provider: "ollama".to_string(),
             model: "qwen2.5:7b".to_string(),
             base_url,
+            api_key: None,
+            display_name: None,
+            fallbacks: Vec::new(),
             context_window: 8192,
             temperature: 0.2,
             top_p: None,
@@ -1121,6 +1173,9 @@ mod tests {
             provider: "openai_compatible".to_string(),
             model: "local-1".to_string(),
             base_url: Some(format!("http://{addr}/v1")),
+            api_key: None,
+            display_name: None,
+            fallbacks: Vec::new(),
             context_window: 8192,
             temperature: 0.2,
             top_p: None,
@@ -1180,6 +1235,9 @@ mod tests {
             provider: "nvidia".to_string(),
             model: "nvidia/llama-3.1-nemotron-ultra-253b-v1".to_string(),
             base_url: Some(format!("http://{addr}/v1")),
+            api_key: None,
+            display_name: None,
+            fallbacks: Vec::new(),
             context_window: 8192,
             temperature: 0.2,
             top_p: None,

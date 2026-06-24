@@ -1,11 +1,14 @@
 use crate::types::OrchestratorConfig;
 use agent1_core::{
-    Agent, Agent1Error, AgentRole, ExecutionStep, MemoryConfig, PermissionMode, Result,
+    Agent, Agent1Error, AgentRole, ExecutionStep, MemoryConfig, ModelConfig, ModelInfo,
+    PermissionMode, Result,
 };
 use agent1_db::SqliteStore;
+use agent1_models::provider_for;
 use agent1_runtime::{AgentRuntime, ApprovalDelegate, ApprovalRequest, RunAgentRequest};
 use agent1_tools::ToolRegistry;
 use async_trait::async_trait;
+use futures_util::future::join_all;
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use tokio::sync::Mutex;
@@ -102,7 +105,7 @@ impl TeamManager {
             }
         };
 
-        let model = self.config.model_routing.for_role(role).clone();
+        let model = self.select_model_for_role(role, &base_tools).await;
 
         let mut permissions = BTreeMap::new();
         for tool in &base_tools {
@@ -159,6 +162,44 @@ impl TeamManager {
         active.insert(agent_id, agent.clone());
 
         Ok(agent)
+    }
+
+    async fn select_model_for_role(&self, role: AgentRole, tools: &[String]) -> ModelConfig {
+        #[cfg(test)]
+        {
+            let _ = tools;
+            return self.config.model_routing.for_role(role).clone();
+        }
+
+        #[cfg(not(test))]
+        {
+            let preferred = self.config.model_routing.for_role(role).clone();
+            if !preferred.provider.eq_ignore_ascii_case("codex")
+                && model_is_explicitly_configured_for_role(role)
+            {
+                return preferred;
+            }
+
+            let mut candidates = available_subagent_models().await;
+            candidates.sort_by(|left, right| {
+                score_model_for_role(right, role, tools)
+                    .cmp(&score_model_for_role(left, role, tools))
+                    .then_with(|| {
+                        provider_preference(&left.provider)
+                            .cmp(&provider_preference(&right.provider))
+                    })
+            });
+
+            if let Some(model) = candidates.into_iter().next() {
+                return model_config_for(&model, role);
+            }
+
+            if preferred.provider.eq_ignore_ascii_case("codex") {
+                fallback_subagent_model(role)
+            } else {
+                preferred
+            }
+        }
     }
 
     pub async fn get_agent(&self, agent_id: &str) -> Result<Agent> {
@@ -218,6 +259,216 @@ impl TeamManager {
         let mut active = self.active_agents.lock().await;
         active.clear();
         Ok(())
+    }
+}
+
+#[cfg(not(test))]
+fn model_is_explicitly_configured_for_role(role: AgentRole) -> bool {
+    let role = role.as_str().to_ascii_uppercase();
+    std::env::var(format!("AGENT1_MODEL_{role}")).is_ok()
+        || std::env::var("AGENT1_MODEL_DEFAULT").is_ok()
+}
+
+#[cfg(not(test))]
+async fn available_subagent_models() -> Vec<ModelInfo> {
+    let configs = [
+        probe_config("nvidia", None),
+        probe_config("opencode", None),
+        probe_config("ollama", Some("http://localhost:11434")),
+        probe_config("openai_compatible", Some("http://localhost:8000/v1")),
+    ];
+
+    let probes = configs.into_iter().map(|config| async move {
+        let provider = provider_for(&config).ok()?;
+        provider.list_models(&config).await.ok()
+    });
+
+    join_all(probes)
+        .await
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|model| !model.provider.eq_ignore_ascii_case("codex"))
+        .collect()
+}
+
+#[cfg(not(test))]
+fn probe_config(provider: &str, default_base_url: Option<&str>) -> ModelConfig {
+    ModelConfig {
+        provider: provider.to_string(),
+        model: "unused".to_string(),
+        base_url: provider_base_url(provider).or_else(|| default_base_url.map(ToString::to_string)),
+        api_key: provider_api_key(provider),
+        display_name: None,
+        fallbacks: Vec::new(),
+        context_window: 8192,
+        temperature: 0.2,
+        top_p: None,
+        max_tokens: None,
+    }
+}
+
+#[cfg(not(test))]
+fn provider_base_url(provider: &str) -> Option<String> {
+    let key = match provider {
+        "nvidia" => "NVIDIA_BASE_URL",
+        "ollama" => "OLLAMA_BASE_URL",
+        "openai_compatible" => "AGENT1_OPENAI_COMPATIBLE_BASE_URL",
+        _ => return None,
+    };
+    std::env::var(key)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+#[cfg(not(test))]
+fn provider_api_key(provider: &str) -> Option<String> {
+    let key = match provider {
+        "nvidia" => "NVIDIA_API_KEY",
+        "openai_compatible" => "AGENT1_OPENAI_COMPATIBLE_API_KEY",
+        _ => return None,
+    };
+    std::env::var(key)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+#[cfg(not(test))]
+fn model_config_for(model: &ModelInfo, role: AgentRole) -> ModelConfig {
+    ModelConfig {
+        provider: model.provider.clone(),
+        model: model.name.clone(),
+        base_url: provider_base_url(&model.provider),
+        api_key: provider_api_key(&model.provider),
+        display_name: Some(format!(
+            "{} auto-selected for {}",
+            model.name,
+            role.as_str()
+        )),
+        fallbacks: Vec::new(),
+        context_window: inferred_context_window(&model.name),
+        temperature: role_temperature(role),
+        top_p: None,
+        max_tokens: None,
+    }
+}
+
+#[cfg(not(test))]
+fn fallback_subagent_model(role: AgentRole) -> ModelConfig {
+    ModelConfig {
+        provider: "ollama".to_string(),
+        model: "llama3.1:8b".to_string(),
+        base_url: provider_base_url("ollama")
+            .or_else(|| Some("http://localhost:11434".to_string())),
+        api_key: None,
+        display_name: Some(format!("Ollama fallback for {}", role.as_str())),
+        fallbacks: Vec::new(),
+        context_window: 8192,
+        temperature: role_temperature(role),
+        top_p: None,
+        max_tokens: None,
+    }
+}
+
+#[cfg(not(test))]
+fn score_model_for_role(model: &ModelInfo, role: AgentRole, tools: &[String]) -> i32 {
+    let name = model.name.to_ascii_lowercase();
+    let provider = model.provider.to_ascii_lowercase();
+    let mut score = 0;
+
+    score += match provider.as_str() {
+        "nvidia" => 40,
+        "opencode" => 32,
+        "ollama" => 24,
+        "openai_compatible" => 18,
+        _ => 0,
+    };
+
+    if provider == "nvidia" {
+        score += 18;
+    }
+    if name.contains("coder") || name.contains("code") || name.contains("dev") {
+        score += 20;
+    }
+    if name.contains("qwen") || name.contains("deepseek") || name.contains("claude") {
+        score += 12;
+    }
+    if name.contains("llama") || name.contains("nemotron") {
+        score += 10;
+    }
+    if name.contains("mini") || name.contains("small") || name.contains("3b") {
+        score -= 10;
+    }
+    if name.contains("70b")
+        || name.contains("72b")
+        || name.contains("90b")
+        || name.contains("253b")
+        || name.contains("405b")
+    {
+        score += 14;
+    }
+
+    match role {
+        AgentRole::Planner | AgentRole::Critic | AgentRole::Orchestrator => {
+            score += 10;
+            if provider == "nvidia" {
+                score += 10;
+            }
+        }
+        AgentRole::Worker | AgentRole::Builder => {
+            if tools.iter().any(|tool| tool == "file_write") {
+                score += 8;
+            }
+            if name.contains("coder") || name.contains("code") {
+                score += 16;
+            }
+        }
+        AgentRole::Researcher | AgentRole::Reporter => {
+            if name.contains("instruct") || name.contains("chat") || name.contains("llama") {
+                score += 8;
+            }
+            if provider == "ollama" {
+                score += 4;
+            }
+        }
+    }
+
+    score
+}
+
+#[cfg(not(test))]
+fn provider_preference(provider: &str) -> i32 {
+    match provider {
+        "nvidia" => 0,
+        "opencode" => 1,
+        "ollama" => 2,
+        "openai_compatible" => 3,
+        _ => 9,
+    }
+}
+
+#[cfg(not(test))]
+fn inferred_context_window(model_name: &str) -> u32 {
+    let name = model_name.to_ascii_lowercase();
+    if name.contains("128k") || name.contains("131k") {
+        131_072
+    } else if name.contains("32k") {
+        32_768
+    } else if name.contains("16k") {
+        16_384
+    } else {
+        8192
+    }
+}
+
+#[cfg(not(test))]
+fn role_temperature(role: AgentRole) -> f32 {
+    match role {
+        AgentRole::Critic => 0.1,
+        AgentRole::Worker | AgentRole::Builder => 0.15,
+        _ => 0.2,
     }
 }
 
