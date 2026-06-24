@@ -34,6 +34,7 @@ use axum::{
     routing::{delete, get, post},
     Json, Router,
 };
+use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -2979,9 +2980,10 @@ async fn api_projects_invite(
         permissions.can_delegate_tasks = false;
         permissions.max_concurrent_tasks = permissions.max_concurrent_tasks.min(1);
     }
+    let expires_at = parse_invite_expires_at(body.get("expires_at"))?;
     let token = state
         .gateway
-        .generate_invite(&id, permissions, created_by.to_string())
+        .generate_invite(&id, permissions, created_by.to_string(), expires_at)
         .await
         .map_err(|e| ApiError::internal(e.to_string()))?;
     Ok(json_ok(json!({
@@ -2989,6 +2991,24 @@ async fn api_projects_invite(
         "invite": token,
         "project_id": id
     })))
+}
+
+fn parse_invite_expires_at(value: Option<&Value>) -> Result<DateTime<Utc>, ApiError> {
+    let expires_at = match value {
+        Some(Value::String(text)) if !text.trim().is_empty() => DateTime::parse_from_rfc3339(text)
+            .map_err(|_| ApiError::bad_request("expires_at must be an RFC3339 date-time"))?
+            .with_timezone(&Utc),
+        Some(Value::Null) | None => now() + chrono::Duration::hours(24),
+        Some(_) => {
+            return Err(ApiError::bad_request(
+                "expires_at must be a date-time string",
+            ))
+        }
+    };
+    if expires_at <= now() {
+        return Err(ApiError::bad_request("expires_at must be in the future"));
+    }
+    Ok(expires_at)
 }
 
 async fn api_projects_invites(

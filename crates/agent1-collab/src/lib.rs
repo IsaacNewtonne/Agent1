@@ -19,6 +19,7 @@ use agent1_core::{
     ExternalAgentStatus, ExternalPermissions, InviteToken, Project, Result,
 };
 use agent1_db::SqliteStore;
+use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
 use tokio::sync::{broadcast, Mutex, RwLock};
 
@@ -379,9 +380,10 @@ impl CollaborationEngine {
         project_id: &str,
         permissions: ExternalPermissions,
         created_by: String,
+        expires_at: DateTime<Utc>,
     ) -> Result<InviteToken> {
         let project = self.store.get_project(project_id).await?;
-        let invite = InviteToken::generate(&project, permissions, created_by);
+        let invite = InviteToken::generate(&project, permissions, created_by, expires_at);
         self.store.save_invite_token(&invite).await?;
         Ok(invite)
     }

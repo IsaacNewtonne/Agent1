@@ -1130,6 +1130,7 @@ impl InviteToken {
         project: &Project,
         permissions: ExternalPermissions,
         created_by: String,
+        expires_at: DateTime<Utc>,
     ) -> Self {
         let token = format!("inv_{}", Uuid::now_v7().simple());
         Self {
@@ -1139,7 +1140,7 @@ impl InviteToken {
             permissions,
             created_by,
             gateway_url: None,
-            expires_at: None,
+            expires_at: Some(expires_at),
             used_by: None,
             created_at: now(),
         }

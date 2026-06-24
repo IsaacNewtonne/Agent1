@@ -1854,6 +1854,12 @@
   accent-color: var(--accent-primary);
 }
 
+.invite-expiry-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+}
+
 .popover-actions.inline {
   justify-content: flex-start;
 }
@@ -1872,6 +1878,11 @@
   font-family: var(--font-mono);
   font-size: 10px;
   text-transform: uppercase;
+}
+
+.invite-result .invite-expiry-text {
+  color: #b7d3ec;
+  text-transform: none;
 }
 
 .invite-result code {
@@ -1947,6 +1958,12 @@
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 6px;
+}
+
+@media (max-width: 520px) {
+  .invite-expiry-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .mcp-manager-list {

@@ -398,12 +398,12 @@ export default function useCollaboration(apiBase) {
     }
   }, [fetchJson, refreshAll]);
 
-  const createInvite = useCallback(async (permissions, createdBy = "user") => {
+  const createInvite = useCallback(async (permissions, createdBy = "user", expiresAt = null) => {
     if (!activeProject?.id) throw new Error("Create a project before inviting external agents.");
     const result = await fetchJson(`/api/projects/${encodeURIComponent(activeProject.id)}/invite`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ created_by: createdBy, permissions }),
+      body: JSON.stringify({ created_by: createdBy, permissions, expires_at: expiresAt }),
     });
     await refreshAll();
     return result;

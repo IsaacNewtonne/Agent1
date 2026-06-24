@@ -71,6 +71,39 @@ function gatewayUrl(apiBase, token, agentName = "hermes-agent") {
   return `${base}/gateway/connect?token=${encodeURIComponent(token)}&agent_name=${encodeURIComponent(agentName)}`;
 }
 
+const INVITE_EXPIRY_OPTIONS = [
+  { value: "1h", label: "1 hour", hours: 1 },
+  { value: "24h", label: "24 hours", hours: 24 },
+  { value: "7d", label: "7 days", hours: 24 * 7 },
+  { value: "custom", label: "Custom date" },
+];
+
+function dateTimeLocalValue(date = new Date()) {
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+  return local.toISOString().slice(0, 16);
+}
+
+function expiryIsoFromForm(option, customValue) {
+  const preset = INVITE_EXPIRY_OPTIONS.find((item) => item.value === option);
+  if (preset?.hours) {
+    return new Date(Date.now() + preset.hours * 60 * 60 * 1000).toISOString();
+  }
+  if (!customValue) return null;
+  return new Date(customValue).toISOString();
+}
+
+function formatInviteExpiry(value) {
+  if (!value) return "No expiry";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Invalid expiry";
+  return `Expires ${date.toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  })}`;
+}
+
 const POLICY_PROFILES = {
   automatic: {
     label: "Automatic",
@@ -440,6 +473,10 @@ export default function CollabWorkspace() {
     max_concurrent_tasks: 2,
     allowed_tools: "",
   });
+  const [inviteExpiryOption, setInviteExpiryOption] = useState("24h");
+  const [inviteCustomExpiresAt, setInviteCustomExpiresAt] = useState(() =>
+    dateTimeLocalValue(new Date(Date.now() + 24 * 60 * 60 * 1000))
+  );
   const [inviteResult, setInviteResult] = useState(null);
   const [mcpActionStatus, setMcpActionStatus] = useState("");
   const [expandedMcpServerId, setExpandedMcpServerId] = useState(null);
@@ -712,7 +749,16 @@ export default function CollabWorkspace() {
           .filter(Boolean),
         max_concurrent_tasks: Number(invitePermissions.max_concurrent_tasks) || 1,
       };
-      const result = await collab.createInvite(permissions);
+      const expiresAt = expiryIsoFromForm(inviteExpiryOption, inviteCustomExpiresAt);
+      if (!expiresAt || Number.isNaN(new Date(expiresAt).getTime())) {
+        setExternalFormStatus("Choose a valid invite expiration.");
+        return;
+      }
+      if (new Date(expiresAt).getTime() <= Date.now()) {
+        setExternalFormStatus("Invite expiration must be in the future.");
+        return;
+      }
+      const result = await collab.createInvite(permissions, "user", expiresAt);
       setInviteResult(result.invite || result);
     } catch (err) {
       setExternalFormStatus(`Invite failed: ${err.message}`);
@@ -1129,6 +1175,30 @@ export default function CollabWorkspace() {
                   />
                 </label>
               </div>
+              <div className="invite-expiry-grid">
+                <label>
+                  <span>Invite expires</span>
+                  <select
+                    value={inviteExpiryOption}
+                    onChange={(e) => setInviteExpiryOption(e.target.value)}
+                  >
+                    {INVITE_EXPIRY_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                </label>
+                {inviteExpiryOption === "custom" && (
+                  <label>
+                    <span>Expiration date</span>
+                    <input
+                      type="datetime-local"
+                      min={dateTimeLocalValue(new Date(Date.now() + 60 * 1000))}
+                      value={inviteCustomExpiresAt}
+                      onChange={(e) => setInviteCustomExpiresAt(e.target.value)}
+                    />
+                  </label>
+                )}
+              </div>
               <div className="popover-actions inline">
                 <button type="button" className="btn-confirm" onClick={handleCreateInvite} disabled={!collab.activeProject || isAirgapped}>
                   Generate Invite
@@ -1138,6 +1208,7 @@ export default function CollabWorkspace() {
                 <div className="invite-result">
                   <span>Token</span>
                   <code>{inviteResult.token}</code>
+                  <span className="invite-expiry-text">{formatInviteExpiry(inviteResult.expires_at)}</span>
                 </div>
               )}
               <div className="hermes-connect-card">
@@ -1158,6 +1229,7 @@ export default function CollabWorkspace() {
                         <strong>{invite.used_by ? "Used invite" : "Open invite"}</strong>
                         <code>{invite.token}</code>
                         <span>{invite.created_by || "user"} - {invite.used_by || "unused"}</span>
+                        <span>{formatInviteExpiry(invite.expires_at)}</span>
                       </div>
                       <div className="invite-manager-actions">
                         <button type="button" className="btn-ghost" onClick={() => handleCopyInvite(invite)}>Copy</button>

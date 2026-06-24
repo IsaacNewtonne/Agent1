@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use agent1_collab::CollaborationEngine;
 use agent1_core::{now, Agent1Error, AuthorType, ExternalPermissions, InviteToken, Result};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::RwLock;
@@ -48,9 +49,10 @@ impl ExternalGateway {
         project_id: &str,
         permissions: ExternalPermissions,
         created_by: String,
+        expires_at: DateTime<Utc>,
     ) -> Result<InviteToken> {
         self.engine
-            .generate_invite(project_id, permissions, created_by)
+            .generate_invite(project_id, permissions, created_by, expires_at)
             .await
     }
 

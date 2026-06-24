@@ -23,6 +23,7 @@ agent1-gateway.workspace = true
 axum.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
+chrono.workspace = true
 clap.workspace = true
 futures-util.workspace = true
 reqwest.workspace = true
