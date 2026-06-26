@@ -126,6 +126,8 @@ The current app centers on the **Hybrid Collaboration Workspace**: create a proj
 | 💬 `agent1 run --agent agents/assistant.toml --task "hello"` | Run an agent from the CLI. |
 | 👥 `agent1 team --task "..."` | Run planner, worker, and critic agents. |
 | 🔁 `agent1 loop --task "..." --max-runs 5` | Run bounded autonomous plan, execute, review iterations with persistent notes. |
+| 🔁 `agent1 loops list` | List registered recurring loops from `.agent1/loops.toml`. |
+| 🔁 `agent1 loops run external-intelligence` | Run one registered loop through the bounded autonomous loop runner. |
 | 🧠 `agent1 models --provider ollama` | List models for a provider. Use `--provider nvidia` for NVIDIA NIM. |
 | ➕ `agent1 agent create agents/my-agent.toml` | Save an agent definition. |
 | 🧰 `agent1 mcp list` | List MCP servers. |

@@ -1,0 +1,60 @@
+[[loops]]
+id = "external-intelligence"
+owner = "researcher"
+cadence = "daily"
+mode = "proposal_only"
+output_dir = "Agent1_Project_Docs/external-intelligence"
+notes = ".agent1/external-intel-notes.md"
+max_runs = 1
+completion_signal = "AGENT1_EXTERNAL_INTEL_COMPLETE"
+completion_threshold = 1
+task = """
+Run the Agent1 External Intelligence Loop from Agent1_Project_Docs/EXTERNAL_INTELLIGENCE_LOOP.md.
+Research current open-source agent, MCP, workflow orchestration, eval, local-first AI, and desktop automation architectures.
+Write a dated digest and propose bounded one-change experiments only.
+"""
+
+[[loops]]
+id = "stale-plan-sweep"
+owner = "planner"
+cadence = "daily"
+mode = "proposal_only"
+output_dir = "Agent1_Project_Docs/operations"
+notes = ".agent1/loops/stale-plan-sweep-notes.md"
+max_runs = 1
+completion_threshold = 1
+task = """
+Inspect Agent1 project docs, plans, recent sessions, and improvement queues for stale plans, blocked tasks, missing next steps, or ambiguous ownership.
+Write a concise operations sweep with concrete next actions.
+Do not modify production code.
+"""
+
+[[loops]]
+id = "failure-mining"
+owner = "critic"
+cadence = "daily"
+mode = "proposal_only"
+output_dir = "Agent1_Project_Docs/failures"
+notes = ".agent1/loops/failure-mining-notes.md"
+max_runs = 1
+completion_threshold = 1
+task = """
+Review recent failed or incomplete Agent1 runs, approvals, and notes.
+Identify repeated failure patterns and propose the smallest guardrail, eval, or workflow change that would prevent recurrence.
+Do not modify production code.
+"""
+
+[[loops]]
+id = "eval-gap-sweep"
+owner = "critic"
+cadence = "weekly"
+mode = "proposal_only"
+output_dir = "Agent1_Project_Docs/evals"
+notes = ".agent1/loops/eval-gap-sweep-notes.md"
+max_runs = 1
+completion_threshold = 1
+task = """
+Review Agent1's tests, smoke checks, and documented verification gaps.
+Propose missing evals for high-risk loops, approval boundaries, memory behavior, orchestration failures, and desktop workflows.
+Do not modify production code.
+"""

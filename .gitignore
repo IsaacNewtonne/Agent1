@@ -1,5 +1,6 @@
 target/
-.agent1/
+.agent1/*
+!.agent1/loops.toml
 *.db
 *.db-shm
 *.db-wal

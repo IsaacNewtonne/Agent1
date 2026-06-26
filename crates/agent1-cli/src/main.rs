@@ -102,6 +102,10 @@ enum Command {
         #[arg(long)]
         notes: Option<PathBuf>,
     },
+    Loops {
+        #[command(subcommand)]
+        command: LoopsCommand,
+    },
     Models {
         #[arg(long, default_value = "ollama")]
         provider: String,
@@ -162,6 +166,27 @@ enum Command {
         output: Option<PathBuf>,
     },
     Ui,
+}
+
+#[derive(Debug, Subcommand)]
+enum LoopsCommand {
+    List {
+        #[arg(long, default_value = ".agent1/loops.toml")]
+        config: PathBuf,
+    },
+    Run {
+        id: String,
+        #[arg(long, default_value = ".agent1/loops.toml")]
+        config: PathBuf,
+        #[arg(long, default_value = ".")]
+        workspace: PathBuf,
+        #[arg(long, default_value = ".agent1/agent1.db")]
+        db: PathBuf,
+        #[arg(long)]
+        auto_approve: bool,
+        #[arg(long)]
+        max_runs: Option<usize>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -360,6 +385,54 @@ async fn main() -> anyhow::Result<()> {
             )
             .await?;
         }
+        Command::Loops { command } => match command {
+            LoopsCommand::List { config } => {
+                let registry = load_loop_registry(&config)?;
+                for entry in registry.enabled_loops() {
+                    println!(
+                        "{}\towner={}\tcadence={}\tmode={}\tmax_runs={}",
+                        entry.id,
+                        entry.owner.as_deref().unwrap_or("-"),
+                        entry.cadence.as_deref().unwrap_or("-"),
+                        entry.mode.as_deref().unwrap_or("proposal_only"),
+                        entry.max_runs.unwrap_or(1)
+                    );
+                }
+            }
+            LoopsCommand::Run {
+                id,
+                config,
+                workspace,
+                db,
+                auto_approve,
+                max_runs,
+            } => {
+                let registry = load_loop_registry(&config)?;
+                let entry = registry.find_enabled(&id)?;
+                let task = build_registered_loop_task(entry);
+                let completion_signal = entry
+                    .completion_signal
+                    .clone()
+                    .unwrap_or_else(|| format!("AGENT1_LOOP_{}_COMPLETE", signal_id(&entry.id)));
+                let notes = entry.notes.clone().or_else(|| {
+                    Some(PathBuf::from(format!(
+                        ".agent1/loops/{}-notes.md",
+                        entry.id
+                    )))
+                });
+                run_autonomous_loop(
+                    task,
+                    workspace,
+                    db,
+                    auto_approve,
+                    max_runs.or(entry.max_runs).unwrap_or(1),
+                    completion_signal,
+                    entry.completion_threshold.unwrap_or(1),
+                    notes,
+                )
+                .await?;
+            }
+        },
         Command::Models { provider, base_url } => {
             let config = ModelConfig {
                 provider,
@@ -609,6 +682,134 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LoopRegistry {
+    #[serde(default)]
+    loops: Vec<LoopRegistryEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LoopRegistryEntry {
+    id: String,
+    task: String,
+    #[serde(default = "default_true")]
+    enabled: bool,
+    #[serde(default)]
+    owner: Option<String>,
+    #[serde(default)]
+    cadence: Option<String>,
+    #[serde(default)]
+    mode: Option<String>,
+    #[serde(default)]
+    output_dir: Option<PathBuf>,
+    #[serde(default)]
+    notes: Option<PathBuf>,
+    #[serde(default)]
+    max_runs: Option<usize>,
+    #[serde(default)]
+    completion_signal: Option<String>,
+    #[serde(default)]
+    completion_threshold: Option<usize>,
+}
+
+impl LoopRegistry {
+    fn enabled_loops(&self) -> impl Iterator<Item = &LoopRegistryEntry> {
+        self.loops.iter().filter(|entry| entry.enabled)
+    }
+
+    fn find_enabled(&self, id: &str) -> anyhow::Result<&LoopRegistryEntry> {
+        self.enabled_loops()
+            .find(|entry| entry.id == id)
+            .ok_or_else(|| anyhow::anyhow!("enabled loop `{id}` was not found"))
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn load_loop_registry(path: &PathBuf) -> anyhow::Result<LoopRegistry> {
+    let text = std::fs::read_to_string(path).map_err(|err| {
+        anyhow::anyhow!("failed to read loop registry `{}`: {err}", path.display())
+    })?;
+    let registry: LoopRegistry = toml::from_str(&text).map_err(|err| {
+        anyhow::anyhow!("failed to parse loop registry `{}`: {err}", path.display())
+    })?;
+    validate_loop_registry(&registry)?;
+    Ok(registry)
+}
+
+fn validate_loop_registry(registry: &LoopRegistry) -> anyhow::Result<()> {
+    let mut ids = BTreeSet::new();
+    for entry in &registry.loops {
+        if entry.id.trim().is_empty() {
+            return Err(anyhow::anyhow!("loop registry contains an empty id"));
+        }
+        if !ids.insert(entry.id.clone()) {
+            return Err(anyhow::anyhow!("duplicate loop id `{}`", entry.id));
+        }
+        if entry.task.trim().is_empty() {
+            return Err(anyhow::anyhow!("loop `{}` has an empty task", entry.id));
+        }
+        if matches!(entry.max_runs, Some(0)) {
+            return Err(anyhow::anyhow!(
+                "loop `{}` max_runs must be greater than zero",
+                entry.id
+            ));
+        }
+        if matches!(entry.completion_threshold, Some(0)) {
+            return Err(anyhow::anyhow!(
+                "loop `{}` completion_threshold must be greater than zero",
+                entry.id
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn build_registered_loop_task(entry: &LoopRegistryEntry) -> String {
+    let mode = entry.mode.as_deref().unwrap_or("proposal_only");
+    let owner = entry.owner.as_deref().unwrap_or("unspecified");
+    let cadence = entry.cadence.as_deref().unwrap_or("manual");
+    let output_dir = entry
+        .output_dir
+        .as_ref()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "not specified".to_string());
+
+    format!(
+        r#"Run registered Agent1 loop `{}`.
+
+Owner role: {owner}
+Cadence: {cadence}
+Mode: {mode}
+Output directory: {output_dir}
+
+Loop task:
+{}
+
+Loop rules:
+- Keep the work bounded to this loop's task and mode.
+- Leave durable artifacts or notes that a future run can inspect.
+- If mode is `proposal_only`, do not modify production code, prompts, dependencies, approval policy, security policy, or generated lockfiles.
+- If implementation is needed, propose a separate one-change experiment with verification and rollback steps.
+- If the same failure recurs, stop retrying and write a smaller follow-up with the root cause and missing guardrail."#,
+        entry.id, entry.task
+    )
+}
+
+fn signal_id(id: &str) -> String {
+    id.chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 async fn run_agent_once(
@@ -3371,6 +3572,69 @@ system_prompt = "Help."
             &["done without the signal"]
         ));
         assert!(!completion_seen("", &["anything"]));
+    }
+
+    #[test]
+    fn loop_registry_parses_enabled_entries() {
+        let registry: LoopRegistry = toml::from_str(
+            r#"
+[[loops]]
+id = "external-intelligence"
+owner = "researcher"
+cadence = "daily"
+mode = "proposal_only"
+task = "Write a digest."
+max_runs = 1
+"#,
+        )
+        .expect("registry parses");
+
+        validate_loop_registry(&registry).expect("registry is valid");
+        let loops = registry.enabled_loops().collect::<Vec<_>>();
+        assert_eq!(loops.len(), 1);
+        assert_eq!(loops[0].id, "external-intelligence");
+        assert_eq!(loops[0].max_runs, Some(1));
+    }
+
+    #[test]
+    fn loop_registry_rejects_duplicate_ids() {
+        let registry: LoopRegistry = toml::from_str(
+            r#"
+[[loops]]
+id = "repeat"
+task = "First."
+
+[[loops]]
+id = "repeat"
+task = "Second."
+"#,
+        )
+        .expect("registry parses");
+
+        let error = validate_loop_registry(&registry).expect_err("duplicate id should fail");
+        assert!(error.to_string().contains("duplicate loop id `repeat`"));
+    }
+
+    #[test]
+    fn registered_loop_task_preserves_proposal_only_boundary() {
+        let entry = LoopRegistryEntry {
+            id: "failure-mining".to_string(),
+            task: "Find repeated failures.".to_string(),
+            enabled: true,
+            owner: Some("critic".to_string()),
+            cadence: Some("daily".to_string()),
+            mode: Some("proposal_only".to_string()),
+            output_dir: Some(PathBuf::from("Agent1_Project_Docs/failures")),
+            notes: None,
+            max_runs: Some(1),
+            completion_signal: None,
+            completion_threshold: Some(1),
+        };
+
+        let task = build_registered_loop_task(&entry);
+        assert!(task.contains("Run registered Agent1 loop `failure-mining`"));
+        assert!(task.contains("If mode is `proposal_only`, do not modify production code"));
+        assert_eq!(signal_id("failure-mining"), "FAILURE_MINING");
     }
 
     #[test]

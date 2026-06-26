@@ -26,7 +26,6 @@ struct StepExecutionResult {
     error: Option<String>,
     escalated: bool,
     escalated_description: Option<String>,
-    critique_result: Option<CritiqueResult>,
 }
 
 #[derive(Debug, Clone)]
@@ -594,34 +593,6 @@ impl Orchestrator {
         }
     }
 
-    async fn get_suggestions(
-        &self,
-        status: Option<agent1_core::SuggestionStatus>,
-    ) -> Result<Vec<agent1_core::Suggestion>> {
-        let Some(ref memory) = self.memory else {
-            return Ok(Vec::new());
-        };
-        memory.get_suggestions(status, 20).await.map_err(|e| {
-            agent1_core::Agent1Error::Runtime(format!("Failed to get suggestions: {}", e))
-        })
-    }
-
-    async fn update_suggestion_status(
-        &self,
-        id: &str,
-        status: agent1_core::SuggestionStatus,
-    ) -> Result<()> {
-        let Some(ref memory) = self.memory else {
-            return Ok(());
-        };
-        memory
-            .update_suggestion_status(id, status)
-            .await
-            .map_err(|e| {
-                agent1_core::Agent1Error::Runtime(format!("Failed to update suggestion: {}", e))
-            })
-    }
-
     async fn get_embedding(&self, text: &str) -> Result<Vec<f32>> {
         let config = &self.config.model_routing.planner;
         let provider = agent1_models::provider_for(config)?;
@@ -734,7 +705,6 @@ impl Orchestrator {
                             error: None,
                             escalated: true,
                             escalated_description: Some(escalation.1),
-                            critique_result: None,
                         };
                     }
 
@@ -766,7 +736,6 @@ impl Orchestrator {
                                 error: None,
                                 escalated: false,
                                 escalated_description: None,
-                                critique_result: None,
                             }
                         }
                         Err(err) => {
@@ -777,7 +746,6 @@ impl Orchestrator {
                                 error: Some(err.to_string()),
                                 escalated: false,
                                 escalated_description: None,
-                                critique_result: None,
                             }
                         }
                     }
