@@ -171,6 +171,7 @@ Watch the outside world for better patterns, tools, models, protocols, and bench
 - Source priority: open-source architecture-bearing repos, model provider blogs, protocol ecosystems, benchmark updates, relevant research
 - De-prioritize: thin API wrappers, generic chat shells, UI-only products without public architecture, trend-driven demos without reliability design
 - Do NOT adopt external claims into core system without local eval, shadow run, or replay-based validation
+- Implementation: use `scripts/agent1-external-intel.ps1` for bounded proposal-only runs and `Agent1_Project_Docs/EXTERNAL_INTELLIGENCE_LOOP.md` as the runbook. Digests live in `Agent1_Project_Docs/external-intelligence/`.
 
 ### 5. Workflow Mining Loop
 Detect repeated successful trajectories and convert them into workflows or skills.
