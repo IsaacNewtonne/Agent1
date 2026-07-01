@@ -12,6 +12,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::{fs, process::Command, time};
 
+const WORKSPACE_MAP_CANDIDATES: &[&str] =
+    &[".agent1/workspace-map.md", "AGENT1_INDEX.md", "INDEX.md"];
+
 #[derive(Debug, Clone)]
 pub struct ToolContext {
     pub workspace_root: PathBuf,
@@ -37,6 +40,7 @@ impl ToolRegistry {
 
     pub fn with_defaults() -> Self {
         let mut registry = Self::new();
+        registry.insert(WorkspaceMapTool);
         registry.insert(FileReadTool);
         registry.insert(FileListTool);
         registry.insert(FileWriteTool);
@@ -63,6 +67,121 @@ impl ToolRegistry {
             .iter()
             .filter_map(|name| self.tools.get(name).map(|tool| tool.definition()))
             .collect()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceMapSection {
+    pub path: String,
+    pub content: String,
+    pub bytes_read: usize,
+    pub truncated: bool,
+}
+
+pub async fn read_workspace_map(
+    root: &Path,
+    max_bytes_per_file: usize,
+) -> Result<Vec<WorkspaceMapSection>> {
+    let root = root.canonicalize().map_err(|err| {
+        Agent1Error::Runtime(format!(
+            "workspace `{}` is not accessible: {err}",
+            root.display()
+        ))
+    })?;
+    let mut paths = Vec::new();
+    for candidate in WORKSPACE_MAP_CANDIDATES {
+        paths.push(root.join(candidate));
+    }
+
+    let mut entries = fs::read_dir(&root).await.map_err(|err| {
+        Agent1Error::Runtime(format!(
+            "failed to list workspace `{}`: {err}",
+            root.display()
+        ))
+    })?;
+    while let Some(entry) = entries
+        .next_entry()
+        .await
+        .map_err(|err| Agent1Error::Runtime(format!("failed to read directory entry: {err}")))?
+    {
+        let metadata = entry
+            .metadata()
+            .await
+            .map_err(|err| Agent1Error::Runtime(format!("failed to read metadata: {err}")))?;
+        if metadata.is_dir() {
+            paths.push(entry.path().join("INDEX.md"));
+        }
+    }
+
+    let mut sections = Vec::new();
+    for path in paths {
+        if !path.exists() {
+            continue;
+        }
+        let canonical = path.canonicalize().map_err(|err| {
+            Agent1Error::Runtime(format!(
+                "workspace map `{}` is not accessible: {err}",
+                path.display()
+            ))
+        })?;
+        if !canonical.starts_with(&root) || !canonical.is_file() {
+            continue;
+        }
+        let bytes = fs::read(&canonical).await.map_err(|err| {
+            Agent1Error::Runtime(format!("failed to read `{}`: {err}", canonical.display()))
+        })?;
+        let max_bytes = max_bytes_per_file.max(1);
+        let truncated = bytes.len() > max_bytes;
+        let content_bytes = if truncated {
+            &bytes[..max_bytes]
+        } else {
+            &bytes
+        };
+        let relative = canonical.strip_prefix(&root).unwrap_or(&canonical);
+        sections.push(WorkspaceMapSection {
+            path: relative.to_string_lossy().replace('\\', "/"),
+            content: String::from_utf8_lossy(content_bytes).to_string(),
+            bytes_read: content_bytes.len(),
+            truncated,
+        });
+    }
+
+    sections.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(sections)
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkspaceMapInput {
+    #[serde(default)]
+    max_bytes_per_file: Option<usize>,
+}
+
+pub struct WorkspaceMapTool;
+
+#[async_trait]
+impl Tool for WorkspaceMapTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "workspace_map".to_string(),
+            description: "Read workspace index files before broad exploration. Looks for .agent1/workspace-map.md, AGENT1_INDEX.md, root INDEX.md, and direct child INDEX.md files.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "max_bytes_per_file": {"type": "integer", "minimum": 1, "maximum": 24000}
+                }
+            }),
+        }
+    }
+
+    async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolResult> {
+        let input: WorkspaceMapInput = serde_json::from_value(input)
+            .map_err(|err| Agent1Error::Config(format!("invalid workspace_map input: {err}")))?;
+        let max_bytes = input.max_bytes_per_file.unwrap_or(8_000).min(24_000);
+        let sections = read_workspace_map(&ctx.workspace_root, max_bytes).await?;
+        Ok(ToolResult {
+            content: serde_json::to_string_pretty(&sections).unwrap_or_else(|_| "[]".to_string()),
+            metadata: json!({"sections": sections.len()}),
+        })
     }
 }
 
@@ -909,6 +1028,7 @@ mod tests {
     #[test]
     fn registry_contains_default_tools() {
         let registry = ToolRegistry::with_defaults();
+        assert!(registry.get("workspace_map").is_some());
         assert!(registry.get("file_read").is_some());
         assert!(registry.get("file_list").is_some());
         assert!(registry.get("workspace_search").is_some());
@@ -916,6 +1036,55 @@ mod tests {
         assert!(registry.get("task_board").is_some());
         assert!(registry.get("verification_check").is_some());
         assert!(registry.get("shell").is_some());
+    }
+
+    #[tokio::test]
+    async fn workspace_map_reads_root_and_child_indexes() {
+        let root =
+            std::env::temp_dir().join(format!("agent1-workspace-map-{}", std::process::id()));
+        let _ = tokio::fs::remove_dir_all(&root).await;
+        tokio::fs::create_dir_all(root.join("docs"))
+            .await
+            .expect("create docs");
+        tokio::fs::write(root.join("AGENT1_INDEX.md"), "root map")
+            .await
+            .expect("write root index");
+        tokio::fs::write(root.join("docs").join("INDEX.md"), "docs map")
+            .await
+            .expect("write child index");
+
+        let sections = read_workspace_map(&root, 100).await.expect("read map");
+
+        assert_eq!(sections.len(), 2);
+        assert!(sections
+            .iter()
+            .any(|section| section.path == "AGENT1_INDEX.md" && section.content == "root map"));
+        assert!(sections
+            .iter()
+            .any(|section| section.path == "docs/INDEX.md" && section.content == "docs map"));
+
+        let _ = tokio::fs::remove_dir_all(&root).await;
+    }
+
+    #[tokio::test]
+    async fn workspace_map_truncates_large_indexes() {
+        let root = std::env::temp_dir().join(format!(
+            "agent1-workspace-map-truncated-{}",
+            std::process::id()
+        ));
+        let _ = tokio::fs::remove_dir_all(&root).await;
+        tokio::fs::create_dir_all(&root).await.expect("create root");
+        tokio::fs::write(root.join("INDEX.md"), "abcdef")
+            .await
+            .expect("write index");
+
+        let sections = read_workspace_map(&root, 3).await.expect("read map");
+
+        assert_eq!(sections.len(), 1);
+        assert_eq!(sections[0].content, "abc");
+        assert!(sections[0].truncated);
+
+        let _ = tokio::fs::remove_dir_all(&root).await;
     }
 
     #[test]

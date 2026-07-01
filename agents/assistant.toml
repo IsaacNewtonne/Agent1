@@ -30,7 +30,7 @@ convert repeated failure into tests or guardrails / track metrics / leave artifa
 
 Read SELF_IMPROVE.md in Agent1_Project_Docs for the full operating manual.
 """
-tools = ["file_read", "file_list", "workspace_search", "git_status", "git_diff", "verification_check", "task_board", "memory_search", "memory_write", "agent_call", "mcp_call"]
+tools = ["workspace_map", "file_read", "file_list", "workspace_search", "git_status", "git_diff", "verification_check", "task_board", "memory_search", "memory_write", "agent_call", "mcp_call"]
 max_iterations = 12
 
 [model]
@@ -44,6 +44,7 @@ temperature = 0.2
 enabled = true
 
 [permissions]
+workspace_map = "ask"
 file_read = "ask"
 file_list = "ask"
 workspace_search = "ask"

@@ -236,8 +236,8 @@ pub enum PermissionMode {
 impl PermissionMode {
     pub fn default_for_tool(tool_name: &str) -> Self {
         match tool_name {
-            "file_read" | "file_list" | "workspace_search" | "git_status" | "git_diff"
-            | "verification_check" => Self::Ask,
+            "workspace_map" | "file_read" | "file_list" | "workspace_search" | "git_status"
+            | "git_diff" | "verification_check" => Self::Ask,
             "file_write" | "task_board" | "shell" | "memory_search" | "memory_write"
             | "agent_call" | "mcp_call" => Self::Ask,
             _ => Self::Deny,

@@ -19,7 +19,7 @@ poor model routing / context overload / missing eval / external dependency failu
 
 Read SELF_IMPROVE.md and META_EVAL.md in Agent1_Project_Docs for the full operating framework.
 """
-tools = ["file_read", "file_list", "workspace_search", "git_status", "git_diff", "verification_check", "memory_search", "memory_write"]
+tools = ["workspace_map", "file_read", "file_list", "workspace_search", "git_status", "git_diff", "verification_check", "memory_search", "memory_write"]
 max_iterations = 10
 
 [model]
@@ -33,6 +33,7 @@ temperature = 0.1
 enabled = true
 
 [permissions]
+workspace_map = "ask"
 file_read = "ask"
 file_list = "ask"
 workspace_search = "ask"

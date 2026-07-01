@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Stdio,
     sync::{Arc, OnceLock},
 };
@@ -13,7 +13,7 @@ use agent1_core::{
 };
 use agent1_db::SqliteStore;
 use agent1_models::provider_for;
-use agent1_tools::{ToolContext, ToolRegistry};
+use agent1_tools::{read_workspace_map, ToolContext, ToolRegistry};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -146,6 +146,8 @@ impl<A: ApprovalDelegate + Clone> AgentRuntime<A> {
             None
         };
 
+        let workspace_map_context = load_workspace_map_context(&request.workspace_root).await;
+
         let mut conversation = vec![
             ChatMessage {
                 role: "system".to_string(),
@@ -153,6 +155,7 @@ impl<A: ApprovalDelegate + Clone> AgentRuntime<A> {
                     &agent,
                     self.definitions_for_agent(&agent),
                     memory_context.as_deref(),
+                    workspace_map_context.as_deref(),
                 ),
             },
             ChatMessage {
@@ -734,9 +737,12 @@ fn build_system_prompt(
     agent: &Agent,
     tools: Vec<agent1_core::ToolDefinition>,
     memory_context: Option<&str>,
+    workspace_map_context: Option<&str>,
 ) -> String {
     let tools_json = serde_json::to_string_pretty(&tools).unwrap_or_else(|_| "[]".to_string());
     let memory_context = memory_context.unwrap_or("No relevant memory was loaded.");
+    let workspace_map_context =
+        workspace_map_context.unwrap_or("No workspace map index files were found.");
     format!(
         r#"{system_prompt}
 
@@ -751,7 +757,7 @@ Use this tool request shape when a tool is needed:
 {{"tool_call":{{"name":"file_read","input":{{"path":"README.md"}}}}}}
 
 Operating loop:
-1. Ground claims in available context. Use search/read/status tools before making repository-specific claims.
+1. Check the workspace map first when it is available, then ground claims with focused search/read/status tools before making repository-specific claims.
 2. For non-trivial work, keep a short plan and update it as evidence changes.
 3. Prefer focused, reversible steps. Do not request broad or destructive actions.
 4. Before a final answer after code, config, or workflow changes, run an appropriate verification tool when available.
@@ -765,12 +771,46 @@ Available tools:
 Relevant local memory:
 {memory_context}
 
+Workspace map:
+{workspace_map_context}
+
 Respect local-first safety. Ask for tools only when they materially improve the answer.
 "#,
         system_prompt = agent.system_prompt,
         tools_json = tools_json,
-        memory_context = memory_context
+        memory_context = memory_context,
+        workspace_map_context = workspace_map_context
     )
+}
+
+async fn load_workspace_map_context(workspace_root: &Path) -> Option<String> {
+    match read_workspace_map(workspace_root, 4_000).await {
+        Ok(sections) => render_workspace_map_context(&sections),
+        Err(err) => {
+            tracing::warn!("Failed to load workspace map: {}", err);
+            None
+        }
+    }
+}
+
+fn render_workspace_map_context(sections: &[agent1_tools::WorkspaceMapSection]) -> Option<String> {
+    if sections.is_empty() {
+        return None;
+    }
+    let mut rendered = String::new();
+    for section in sections {
+        if !rendered.is_empty() {
+            rendered.push_str("\n\n");
+        }
+        rendered.push_str("### ");
+        rendered.push_str(&section.path);
+        if section.truncated {
+            rendered.push_str(" [truncated]");
+        }
+        rendered.push('\n');
+        rendered.push_str(section.content.trim());
+    }
+    Some(rendered)
 }
 
 fn render_memory_context(memories: &[MemoryItem]) -> Option<String> {
@@ -964,8 +1004,8 @@ fn parse_model_response(content: &str) -> ModelAction {
 
 fn risk_for_tool(tool_name: &str) -> RiskLevel {
     match tool_name {
-        "file_read" | "file_list" | "workspace_search" | "git_status" | "git_diff"
-        | "verification_check" | "memory_search" => RiskLevel::Low,
+        "workspace_map" | "file_read" | "file_list" | "workspace_search" | "git_status"
+        | "git_diff" | "verification_check" | "memory_search" => RiskLevel::Low,
         "file_write" | "task_board" | "memory_write" | "agent_call" | "mcp_call" => {
             RiskLevel::Medium
         }

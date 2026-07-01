@@ -1,13 +1,16 @@
 use crate::types::OrchestratorConfig;
+#[cfg(not(test))]
+use agent1_core::ModelInfo;
 use agent1_core::{
-    Agent, Agent1Error, AgentRole, ExecutionStep, MemoryConfig, ModelConfig, ModelInfo,
-    PermissionMode, Result,
+    Agent, Agent1Error, AgentRole, ExecutionStep, MemoryConfig, ModelConfig, PermissionMode, Result,
 };
 use agent1_db::SqliteStore;
+#[cfg(not(test))]
 use agent1_models::provider_for;
 use agent1_runtime::{AgentRuntime, ApprovalDelegate, ApprovalRequest, RunAgentRequest};
 use agent1_tools::ToolRegistry;
 use async_trait::async_trait;
+#[cfg(not(test))]
 use futures_util::future::join_all;
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -40,6 +43,7 @@ impl TeamManager {
         let base_tools = match role {
             AgentRole::Worker | AgentRole::Builder => {
                 vec![
+                    "workspace_map".to_string(),
                     "file_read".to_string(),
                     "file_list".to_string(),
                     "file_write".to_string(),
@@ -52,6 +56,7 @@ impl TeamManager {
             }
             AgentRole::Researcher => {
                 vec![
+                    "workspace_map".to_string(),
                     "file_read".to_string(),
                     "file_list".to_string(),
                     "workspace_search".to_string(),
@@ -60,6 +65,7 @@ impl TeamManager {
             }
             AgentRole::Critic => {
                 vec![
+                    "workspace_map".to_string(),
                     "file_read".to_string(),
                     "file_list".to_string(),
                     "workspace_search".to_string(),
@@ -72,6 +78,7 @@ impl TeamManager {
             }
             AgentRole::Reporter => {
                 vec![
+                    "workspace_map".to_string(),
                     "file_read".to_string(),
                     "file_list".to_string(),
                     "memory_search".to_string(),
@@ -80,6 +87,7 @@ impl TeamManager {
             }
             AgentRole::Planner => {
                 vec![
+                    "workspace_map".to_string(),
                     "file_read".to_string(),
                     "file_list".to_string(),
                     "workspace_search".to_string(),
@@ -92,6 +100,7 @@ impl TeamManager {
             }
             AgentRole::Orchestrator => {
                 vec![
+                    "workspace_map".to_string(),
                     "file_read".to_string(),
                     "file_list".to_string(),
                     "workspace_search".to_string(),

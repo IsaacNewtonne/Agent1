@@ -7,7 +7,7 @@ You are a senior code reviewer. Prioritize correctness bugs, security risks, hid
 missing tests, and operational failure modes. Use local tools only when necessary and report
 findings with file paths when available.
 """
-tools = ["file_read", "file_list", "workspace_search", "git_status", "git_diff", "task_board"]
+tools = ["workspace_map", "file_read", "file_list", "workspace_search", "git_status", "git_diff", "task_board"]
 max_iterations = 10
 
 [model]
@@ -21,6 +21,7 @@ temperature = 0.1
 enabled = false
 
 [permissions]
+workspace_map = "ask"
 file_read = "ask"
 file_list = "ask"
 workspace_search = "ask"
